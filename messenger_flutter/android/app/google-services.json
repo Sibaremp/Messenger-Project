@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "53469606988",
+    "project_id": "caspian-firebase",
+    "storage_bucket": "caspian-firebase.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:53469606988:android:9588dab55bebaa44d030e9",
+        "android_client_info": {
+          "package_name": "com.example.caspian_college_messenger"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAJB58cNvoXeS-8pEXc_OGJp1X_3GMxDHU"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
