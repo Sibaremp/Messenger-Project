@@ -1,0 +1,6 @@
+@CaspianMessenger.Server_HostAddress = http://localhost:5216
+
+GET {{CaspianMessenger.Server_HostAddress}}/weatherforecast/
+Accept: application/json
+
+###
