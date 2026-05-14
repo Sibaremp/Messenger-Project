@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <!--
+    Caspian Messenger — Flutter Web entry point.
+
+    WebRTC requires either HTTPS or localhost.
+    For production, serve over HTTPS and set the CORS headers below on the server.
+  -->
+  <base href="$FLUTTER_BASE_HREF">
+
+  <meta charset="UTF-8">
+  <meta content="IE=Edge" http-equiv="X-UA-Compatible">
+  <meta name="description" content="Caspian Messenger">
+
+  <!-- PWA / mobile web -->
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black">
+  <meta name="apple-mobile-web-app-title" content="Caspian Messenger">
+
+  <!-- Viewport -->
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+  <!-- Favicon -->
+  <link rel="icon" type="image/png" href="icons/Icon-192.png">
+  <link rel="apple-touch-icon" href="icons/Icon-192.png">
+
+  <title>Caspian Messenger</title>
+  <link rel="manifest" href="manifest.json">
+
+  <style>
+    body {
+      margin: 0;
+      background-color: #121212;
+    }
+  </style>
+</head>
+<body>
+  <!-- Flutter bootstrap -->
+  <script src="flutter_bootstrap.js" async></script>
+</body>
+</html>

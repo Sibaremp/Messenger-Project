@@ -1225,6 +1225,10 @@ class _ChatScreenState extends State<ChatScreen> {
             .toList()
         : <String>[];
 
+    // В сообществах говорить по умолчанию могут только создатель и администраторы.
+    final canSpeak = chat.type != ChatType.community ||
+        chat.isCreatorOrAdmin(myName);
+
     Navigator.of(context, rootNavigator: true).push(
       MaterialPageRoute<void>(
         fullscreenDialog: true,
@@ -1240,6 +1244,7 @@ class _ChatScreenState extends State<ChatScreen> {
           chatId: isGroup ? chat.id : null,
           signalingService: signaling,
           auth: auth,
+          canSpeak: canSpeak,
         ),
       ),
     );

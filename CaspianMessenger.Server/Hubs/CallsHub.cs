@@ -44,6 +44,22 @@ public class CallsHub(
     AppDbContext db,
     ILogger<CallsHub> logger) : Hub
 {
+    // ── Lifecycle ─────────────────────────────────────────────────────────────
+
+    /// При подключении добавляем клиента в персональную группу userId.
+    /// Это зеркалит поведение ChatHub и позволяет Clients.Group(userId)
+    /// находить пользователя независимо от платформы (web/native).
+    public override async Task OnConnectedAsync()
+    {
+        var userId = GetUserId();
+        if (userId != Guid.Empty)
+        {
+            await Groups.AddToGroupAsync(Context.ConnectionId, userId.ToString());
+            logger.LogDebug("CallsHub: user {UserId} connected ({ConnId})", userId, Context.ConnectionId);
+        }
+        await base.OnConnectedAsync();
+    }
+
     // ── Client → Server ──────────────────────────────────────────────────────
 
     /// Инициирует звонок. Клиент передаёт один объект StartCallDto.
@@ -74,11 +90,14 @@ public class CallsHub(
             isGroup     = dto.IsGroup,
         };
 
-        // Уведомляем каждого адресата
+        // Уведомляем каждого адресата.
+        // Используем Clients.Group(userId) вместо Clients.User(userId) — это
+        // зеркалит подход NotificationService и работает надёжно на всех
+        // платформах (web/native), так как группа создаётся в OnConnectedAsync.
         foreach (var targetId in dto.TargetUserIds)
         {
             // SignalR (если онлайн)
-            await Clients.User(targetId).SendAsync("IncomingCall", payload);
+            await Clients.Group(targetId).SendAsync("IncomingCall", payload);
 
             // FCM push на все устройства (если фон / закрыто приложение)
             await fcmService.SendCallNotificationAsync(
@@ -151,7 +170,7 @@ public class CallsHub(
         var senderId = GetUserId();
         if (senderId == Guid.Empty) return;
 
-        await Clients.User(dto.TargetUserId).SendAsync("ReceiveOffer", new
+        await Clients.Group(dto.TargetUserId).SendAsync("ReceiveOffer", new
         {
             callId     = dto.CallId,
             fromUserId = senderId.ToString(),
@@ -166,7 +185,7 @@ public class CallsHub(
         var senderId = GetUserId();
         if (senderId == Guid.Empty) return;
 
-        await Clients.User(dto.TargetUserId).SendAsync("ReceiveAnswer", new
+        await Clients.Group(dto.TargetUserId).SendAsync("ReceiveAnswer", new
         {
             callId     = dto.CallId,
             fromUserId = senderId.ToString(),
@@ -181,7 +200,7 @@ public class CallsHub(
         var senderId = GetUserId();
         if (senderId == Guid.Empty) return;
 
-        await Clients.User(dto.TargetUserId).SendAsync("ReceiveIceCandidate", new
+        await Clients.Group(dto.TargetUserId).SendAsync("ReceiveIceCandidate", new
         {
             callId       = dto.CallId,
             fromUserId   = senderId.ToString(),
@@ -191,13 +210,13 @@ public class CallsHub(
         });
     }
 
-    // ── Lifecycle ─────────────────────────────────────────────────────────────
-
     public override async Task OnDisconnectedAsync(Exception? exception)
     {
         var userId = GetUserId();
         if (userId != Guid.Empty)
         {
+            await Groups.RemoveFromGroupAsync(Context.ConnectionId, userId.ToString());
+            logger.LogDebug("CallsHub: user {UserId} disconnected ({ConnId})", userId, Context.ConnectionId);
             var userIdStr = userId.ToString();
             var displayName = await GetDisplayNameAsync(userId);
 

@@ -70,6 +70,8 @@ class CallService {
   }
 
   Future<void> getUserMedia({required bool video}) async {
+    // Сначала пробуем с видео (если нужно). Если не работает — пробуем только аудио.
+    // На веб-браузере камера может быть не подключена или заблокирована.
     final constraints = <String, dynamic>{
       'audio': true,
       'video': video
@@ -80,7 +82,26 @@ class CallService {
             }
           : false,
     };
-    _localStream = await navigator.mediaDevices.getUserMedia(constraints);
+    try {
+      _localStream = await navigator.mediaDevices.getUserMedia(constraints);
+    } catch (e) {
+      if (video) {
+        // Видеокамера недоступна — пробуем только аудио
+        try {
+          _localStream = await navigator.mediaDevices.getUserMedia({
+            'audio': true,
+            'video': false,
+          });
+        } catch (audioErr) {
+          // Даже аудио недоступно (web без разрешения или нет устройства)
+          // Создаём пустой стрим чтобы не падать
+          _localStream = await createLocalMediaStream('empty');
+        }
+      } else {
+        // Только аудио уже запрашивали, но не получили
+        _localStream = await createLocalMediaStream('empty');
+      }
+    }
     localRenderer.srcObject = _localStream;
   }
 

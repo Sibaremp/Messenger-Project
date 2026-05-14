@@ -64,8 +64,16 @@ class SignalingService {
       _hub!.on('ParticipantJoined', _onParticipantJoined);
       _hub!.on('ParticipantLeft', _onParticipantLeft);
 
-      _hub!.onclose(({error}) => _scheduleReconnect());
-      _hub!.start()?.catchError((_) => _scheduleReconnect());
+      _hub!.onclose(({error}) {
+        _log('Hub closed. error=$error — scheduling reconnect');
+        _scheduleReconnect();
+      });
+      _hub!.start()?.then((_) {
+        _log('Hub connected to ${ApiConfig.callHubUrl}');
+      }).catchError((e) {
+        _log('Hub start failed: $e');
+        _scheduleReconnect();
+      });
     } catch (_) {
       _scheduleReconnect();
     }
@@ -77,17 +85,30 @@ class SignalingService {
     _reconnectTimer = Timer(ApiConfig.wsReconnectDelay, _connect);
   }
 
+  /// Преобразует первый аргумент SignalR-события в [Map] с динамическими значениями.
+  /// На Flutter Web данные могут прийти как Map нетипизированных ключей (JS interop),
+  /// поэтому явный cast падает — используем Map.from() для безопасного преобразования.
+  Map<String, dynamic>? _extractData(List<Object?>? args) {
+    final raw = args?.firstOrNull;
+    if (raw == null) return null;
+    if (raw is Map<String, dynamic>) return raw;
+    if (raw is Map) return Map<String, dynamic>.from(raw);
+    _log('WARNING: unexpected arg type ${raw.runtimeType}: $raw');
+    return null;
+  }
+
   void _onIncomingCall(List<Object?>? args) {
     try {
-      final data = args?.first as Map<String, dynamic>?;
+      final data = _extractData(args);
       if (data == null || _incomingCallCtrl.isClosed) return;
+      _log('IncomingCall received: $data');
       _incomingCallCtrl.add(IncomingCallInfo.fromMap(data));
     } catch (e) { _log('IncomingCall parse error: $e  args=$args'); }
   }
 
   void _onReceiveOffer(List<Object?>? args) {
     try {
-      final data = args?.first as Map<String, dynamic>?;
+      final data = _extractData(args);
       if (data == null || _offerCtrl.isClosed) return;
       _offerCtrl.add(OfferData.fromMap(data));
     } catch (e) { _log('ReceiveOffer parse error: $e  args=$args'); }
@@ -95,7 +116,7 @@ class SignalingService {
 
   void _onReceiveAnswer(List<Object?>? args) {
     try {
-      final data = args?.first as Map<String, dynamic>?;
+      final data = _extractData(args);
       if (data == null || _answerCtrl.isClosed) return;
       _answerCtrl.add(AnswerData.fromMap(data));
     } catch (e) { _log('ReceiveAnswer parse error: $e  args=$args'); }
@@ -103,7 +124,7 @@ class SignalingService {
 
   void _onReceiveIceCandidate(List<Object?>? args) {
     try {
-      final data = args?.first as Map<String, dynamic>?;
+      final data = _extractData(args);
       if (data == null || _iceCandidateCtrl.isClosed) return;
       _iceCandidateCtrl.add(IceCandidateData.fromMap(data));
     } catch (e) { _log('ReceiveIceCandidate parse error: $e  args=$args'); }
@@ -111,7 +132,7 @@ class SignalingService {
 
   void _onCallEnded(List<Object?>? args) {
     try {
-      final data = args?.first as Map<String, dynamic>?;
+      final data = _extractData(args);
       if (data == null || _callEndedCtrl.isClosed) return;
       _callEndedCtrl.add(data['callId'] as String);
     } catch (e) { _log('CallEnded parse error: $e  args=$args'); }
@@ -119,7 +140,7 @@ class SignalingService {
 
   void _onParticipantJoined(List<Object?>? args) {
     try {
-      final data = args?.first as Map<String, dynamic>?;
+      final data = _extractData(args);
       if (data == null || _participantJoinedCtrl.isClosed) return;
       _log('ParticipantJoined: $data');
       _participantJoinedCtrl.add(ParticipantEvent.fromMap(data));
@@ -128,7 +149,7 @@ class SignalingService {
 
   void _onParticipantLeft(List<Object?>? args) {
     try {
-      final data = args?.first as Map<String, dynamic>?;
+      final data = _extractData(args);
       if (data == null || _participantLeftCtrl.isClosed) return;
       _participantLeftCtrl.add(ParticipantEvent.fromMap(data));
     } catch (e) { _log('ParticipantLeft parse error: $e  args=$args'); }

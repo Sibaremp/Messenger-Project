@@ -50,6 +50,7 @@ class _ResponsiveShellState extends State<ResponsiveShell>
   String? _myAvatarPath;
   List<Chat> _chats = [];
   bool _isSearching = false;
+  bool _sidebarCollapsed = false;
   StreamSubscription<ChatEvent>? _eventSub;
   late final TabController _chatTabController;
   late final TabController _academicTabController;
@@ -107,6 +108,15 @@ class _ResponsiveShellState extends State<ResponsiveShell>
 
   void _onIncomingCall(IncomingCallInfo info) {
     if (!mounted) return;
+    // В сообществах: проверяем может ли пользователь говорить
+    final myName = widget.auth.currentUser?.name ?? '';
+    final relatedChat = info.chatId != null
+        ? _chats.where((c) => c.id == info.chatId).firstOrNull
+        : null;
+    final canSpeak = relatedChat == null ||
+        relatedChat.type != ChatType.community ||
+        relatedChat.isCreatorOrAdmin(myName);
+
     showGeneralDialog<void>(
       context: context,
       barrierDismissible: false,
@@ -127,6 +137,7 @@ class _ResponsiveShellState extends State<ResponsiveShell>
                 isGroup: info.isGroup,
                 signalingService: widget.signalingService,
                 auth: widget.auth,
+                canSpeak: canSpeak,
               ),
             ),
           );
@@ -517,6 +528,9 @@ class _ResponsiveShellState extends State<ResponsiveShell>
             chatUnreadCount: _regularChats.fold(
                 0, (sum, c) => sum + c.unreadCount),
             onSettingsTap: _openProfile,
+            collapsed: _sidebarCollapsed,
+            onToggleCollapse: () =>
+                setState(() => _sidebarCollapsed = !_sidebarCollapsed),
           ),
           VerticalDivider(
               width: 1, thickness: 1,

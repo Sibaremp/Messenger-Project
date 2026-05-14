@@ -1,11 +1,12 @@
 import 'dart:async';
-import 'dart:io';
+import 'package:flutter/foundation.dart' show kIsWeb, defaultTargetPlatform, TargetPlatform;
 import 'package:flutter/material.dart';
 import 'package:flutter_contacts/flutter_contacts.dart' as fc;
 import '../models.dart';
 import '../app_constants.dart';
 import '../services/chat_service.dart';
 import '../services/auth_service.dart' as svc;
+import '../services/call_state.dart';
 import '../services/local_cache_service.dart';
 import '../auth_screen.dart' show AuthScreen;
 import '../profile_screen.dart' show ProfileAvatar;
@@ -13,6 +14,7 @@ import '../services/signaling_service.dart';
 import '../widgets/chat_widgets.dart';
 import '../widgets/member_picker.dart';
 import '../widgets/settings_overlay.dart' show MobileSettingsPage;
+import 'call_screen.dart' show CallScreen, IncomingCallOverlay;
 import 'chat_screen.dart';
 import 'search_screen.dart';
 import '../utils/app_snack.dart';
@@ -48,6 +50,7 @@ class _ChatListScreenState extends State<ChatListScreen>
   String? _myAvatarPath;
   List<Chat> _chats = [];
   StreamSubscription<ChatEvent>? _eventSub;
+  StreamSubscription<IncomingCallInfo>? _incomingCallSub;
 
   List<AppContact> _contacts = [];
 
@@ -89,6 +92,10 @@ class _ChatListScreenState extends State<ChatListScreen>
       _loadChats();
       _loadAvatar();
       _loadContacts();
+
+      // Подписываемся на входящие звонки (для мобильного режима и узкого веба)
+      _incomingCallSub =
+          widget.signalingService?.onIncomingCall.listen(_onIncomingCall);
 
       _eventSub = widget.service.events.listen((event) {
         if (!mounted) return;
@@ -134,7 +141,51 @@ class _ChatListScreenState extends State<ChatListScreen>
     _academicTabCtrl.dispose();
     _chatTabCtrl.dispose();
     _eventSub?.cancel();
+    _incomingCallSub?.cancel();
     super.dispose();
+  }
+
+  void _onIncomingCall(IncomingCallInfo info) {
+    if (!mounted) return;
+    final myName = widget.auth.currentUser?.name ?? '';
+    final relatedChat = info.chatId != null
+        ? _chats.where((c) => c.id == info.chatId).firstOrNull
+        : null;
+    final canSpeak = relatedChat == null ||
+        relatedChat.type != ChatType.community ||
+        relatedChat.isCreatorOrAdmin(myName);
+
+    showGeneralDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      barrierColor: Colors.transparent,
+      pageBuilder: (ctx, anim, anim2) => IncomingCallOverlay(
+        callInfo: info,
+        onAccept: () {
+          Navigator.of(ctx).pop();
+          Navigator.of(context, rootNavigator: true).push(
+            MaterialPageRoute<void>(
+              fullscreenDialog: true,
+              builder: (_) => CallScreen(
+                callId: info.callId,
+                peerId: info.callerId,
+                peerName: info.callerName,
+                isVideo: info.isVideo,
+                isOutgoing: false,
+                isGroup: info.isGroup,
+                signalingService: widget.signalingService!,
+                auth: widget.auth,
+                canSpeak: canSpeak,
+              ),
+            ),
+          );
+        },
+        onDecline: () {
+          widget.signalingService?.leaveCall(info.callId);
+          Navigator.of(ctx).pop();
+        },
+      ),
+    );
   }
 
   Future<void> _loadChats() async {
@@ -1353,7 +1404,10 @@ class _ContactPickerScreenState extends State<_ContactPickerScreen> {
     super.dispose();
   }
 
-  bool get _isMobile => Platform.isAndroid || Platform.isIOS;
+  bool get _isMobile =>
+      !kIsWeb &&
+      (defaultTargetPlatform == TargetPlatform.android ||
+          defaultTargetPlatform == TargetPlatform.iOS);
 
   bool _isInApp(fc.Contact contact) {
     for (final p in contact.phones) {
