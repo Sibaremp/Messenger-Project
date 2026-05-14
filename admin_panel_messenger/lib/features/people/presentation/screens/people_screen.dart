@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:math' show min;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../providers/people_provider.dart';
@@ -8,7 +9,6 @@ import '../../../../shared/models/group_item.dart';
 import '../../../../features/subjects/data/subjects_repository.dart';
 import '../../../../features/groups/data/groups_repository.dart';
 
-// Sort columns: 0=ФИО, 1=Роль, 2=Группа
 enum _SortCol { name, role, group }
 
 class PeopleScreen extends ConsumerStatefulWidget {
@@ -21,8 +21,36 @@ class PeopleScreen extends ConsumerStatefulWidget {
 class _PeopleScreenState extends ConsumerState<PeopleScreen> {
   final _searchCtrl = TextEditingController();
   Timer? _debounce;
+
+  // Сортировка
   _SortCol? _sortCol;
   bool _sortAsc = true;
+
+  // Пагинация (клиентская)
+  int _page = 1;
+  int _pageSize = 20;
+
+  // Список групп для дропдауна фильтра
+  List<String> _groupNames = [];
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) => _loadGroups());
+  }
+
+  Future<void> _loadGroups() async {
+    try {
+      final groups =
+          await ref.read(groupsRepositoryProvider).fetchGroups();
+      if (mounted) {
+        setState(() =>
+            _groupNames = groups.map((g) => g.name).toList()..sort());
+      }
+    } catch (_) {
+      // молча — дропдаун просто будет пустым
+    }
+  }
 
   @override
   void dispose() {
@@ -37,6 +65,7 @@ class _PeopleScreenState extends ConsumerState<PeopleScreen> {
       ref
           .read(peopleFilterProvider.notifier)
           .update((s) => s.copyWith(search: value));
+      setState(() => _page = 1);
     });
   }
 
@@ -50,8 +79,7 @@ class _PeopleScreenState extends ConsumerState<PeopleScreen> {
       final cmp = switch (_sortCol!) {
         _SortCol.name  => a.fullName.compareTo(b.fullName),
         _SortCol.role  => a.role.compareTo(b.role),
-        _SortCol.group =>
-            (a.group ?? '').compareTo(b.group ?? ''),
+        _SortCol.group => (a.group ?? '').compareTo(b.group ?? ''),
       };
       return _sortAsc ? cmp : -cmp;
     });
@@ -63,145 +91,249 @@ class _PeopleScreenState extends ConsumerState<PeopleScreen> {
     final asyncPeople = ref.watch(peopleProvider);
     final filter = ref.watch(peopleFilterProvider);
 
+    // Сбрасываем страницу при смене фильтра с сервера
+    ref.listen<PeopleFilter>(peopleFilterProvider, (prev, next) {
+      if (prev != next) setState(() => _page = 1);
+    });
+
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         _buildToolbar(filter),
         Expanded(
           child: asyncPeople.when(
-            data:    (list) => _buildTable(context, _sorted(list)),
-            loading: () => const Center(child: CircularProgressIndicator()),
-            error:   (e, _) => _buildError(e.toString()),
+            data: (list) => _buildContent(context, _sorted(list)),
+            loading: () =>
+                const Center(child: CircularProgressIndicator()),
+            error: (e, _) => _buildError(e.toString()),
           ),
         ),
       ],
     );
   }
 
-  // ── Toolbar ─────────────────────────────────────────────────────────────────
+  // ── Toolbar ─────────────────────────────────────────────────────────────
 
   Widget _buildToolbar(PeopleFilter filter) {
     return Container(
       color: Colors.white,
-      padding: const EdgeInsets.fromLTRB(28, 24, 28, 20),
-      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        Row(children: [
-          const Text('Участники',
-              style: TextStyle(
-                  fontSize: 22,
-                  fontWeight: FontWeight.w700,
-                  color: Color(0xFF111827))),
-          const Spacer(),
-          OutlinedButton.icon(
-            onPressed: () => ref
-                .read(peopleProvider.notifier)
-                .applyFilter(ref.read(peopleFilterProvider)),
-            icon: const Icon(Icons.refresh_rounded, size: 16),
-            label: const Text('Обновить', style: TextStyle(fontSize: 13)),
-            style: OutlinedButton.styleFrom(
-              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-              side: BorderSide(color: Colors.grey.shade300),
-            ),
-          ),
-        ]),
-        const SizedBox(height: 18),
-        Row(children: [
-          Expanded(
-            child: SizedBox(
-              height: 40,
-              child: TextField(
-                controller: _searchCtrl,
-                onChanged: _onSearch,
-                decoration: InputDecoration(
-                  hintText: 'Поиск по ФИО...',
-                  hintStyle: const TextStyle(fontSize: 13, color: Colors.grey),
-                  prefixIcon: const Icon(Icons.search, size: 18),
-                  border: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(8)),
-                  contentPadding: const EdgeInsets.symmetric(vertical: 0),
+      padding: const EdgeInsets.fromLTRB(28, 24, 28, 16),
+      child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // Строка 1: заголовок + кнопка
+            Row(children: [
+              const Text('Участники',
+                  style: TextStyle(
+                      fontSize: 22,
+                      fontWeight: FontWeight.w700,
+                      color: Color(0xFF111827))),
+              const Spacer(),
+              OutlinedButton.icon(
+                onPressed: () => ref
+                    .read(peopleProvider.notifier)
+                    .applyFilter(ref.read(peopleFilterProvider)),
+                icon: const Icon(Icons.refresh_rounded, size: 16),
+                label:
+                    const Text('Обновить', style: TextStyle(fontSize: 13)),
+                style: OutlinedButton.styleFrom(
+                  padding: const EdgeInsets.symmetric(
+                      horizontal: 14, vertical: 10),
+                  side: BorderSide(color: Colors.grey.shade300),
                 ),
-                style: const TextStyle(fontSize: 14),
               ),
-            ),
-          ),
-          const SizedBox(width: 16),
-          SegmentedButton<String>(
-            style: SegmentedButton.styleFrom(
-              textStyle: const TextStyle(fontSize: 13),
-              visualDensity: VisualDensity.compact,
-            ),
-            segments: const [
-              ButtonSegment(value: 'all',     label: Text('Все')),
-              ButtonSegment(value: 'student', label: Text('Студенты')),
-              ButtonSegment(value: 'teacher', label: Text('Преподаватели')),
-            ],
-            selected: {filter.role},
-            onSelectionChanged: (v) => ref
-                .read(peopleFilterProvider.notifier)
-                .update((s) => s.copyWith(role: v.first)),
-          ),
-        ]),
-      ]),
+            ]),
+            const SizedBox(height: 14),
+            // Строка 2: поиск + роль
+            Row(children: [
+              Expanded(
+                child: SizedBox(
+                  height: 40,
+                  child: TextField(
+                    controller: _searchCtrl,
+                    onChanged: _onSearch,
+                    decoration: InputDecoration(
+                      hintText: 'Поиск по ФИО...',
+                      hintStyle: const TextStyle(
+                          fontSize: 13, color: Colors.grey),
+                      prefixIcon: const Icon(Icons.search, size: 18),
+                      border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(8)),
+                      contentPadding:
+                          const EdgeInsets.symmetric(vertical: 0),
+                    ),
+                    style: const TextStyle(fontSize: 14),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 16),
+              SegmentedButton<String>(
+                style: SegmentedButton.styleFrom(
+                  textStyle: const TextStyle(fontSize: 13),
+                  visualDensity: VisualDensity.compact,
+                ),
+                segments: const [
+                  ButtonSegment(value: 'all', label: Text('Все')),
+                  ButtonSegment(
+                      value: 'student', label: Text('Студенты')),
+                  ButtonSegment(
+                      value: 'teacher',
+                      label: Text('Преподаватели')),
+                ],
+                selected: {filter.role},
+                onSelectionChanged: (v) {
+                  ref.read(peopleFilterProvider.notifier).update(
+                      (s) => s.copyWith(role: v.first));
+                  setState(() => _page = 1);
+                },
+              ),
+            ]),
+            const SizedBox(height: 10),
+            // Строка 3: группа + аккаунт + кол-во на странице
+            Row(children: [
+              // Группа
+              _ToolbarDropdown<String?>(
+                icon: Icons.group_outlined,
+                hint: 'Все группы',
+                value: filter.group,
+                items: [
+                  const DropdownMenuItem(
+                      value: null, child: Text('Все группы')),
+                  ..._groupNames.map((g) =>
+                      DropdownMenuItem(value: g, child: Text(g))),
+                ],
+                onChanged: (v) {
+                  ref
+                      .read(peopleFilterProvider.notifier)
+                      .update((s) => s.copyWith(group: v));
+                  setState(() => _page = 1);
+                },
+              ),
+              const SizedBox(width: 10),
+              // Аккаунт
+              _ToolbarDropdown<bool?>(
+                icon: Icons.account_circle_outlined,
+                hint: 'Аккаунт: все',
+                value: filter.hasUser,
+                items: const [
+                  DropdownMenuItem(
+                      value: null, child: Text('Аккаунт: все')),
+                  DropdownMenuItem(
+                      value: true, child: Text('Есть аккаунт')),
+                  DropdownMenuItem(
+                      value: false, child: Text('Нет аккаунта')),
+                ],
+                onChanged: (v) {
+                  ref
+                      .read(peopleFilterProvider.notifier)
+                      .update((s) => s.copyWith(hasUser: v));
+                  setState(() => _page = 1);
+                },
+              ),
+              const Spacer(),
+              // Кол-во записей на странице
+              _ToolbarDropdown<int>(
+                icon: Icons.format_list_numbered_rounded,
+                hint: '20 / стр.',
+                value: _pageSize,
+                items: const [
+                  DropdownMenuItem(value: 20, child: Text('20 / стр.')),
+                  DropdownMenuItem(value: 50, child: Text('50 / стр.')),
+                  DropdownMenuItem(
+                      value: 100, child: Text('100 / стр.')),
+                ],
+                onChanged: (v) {
+                  if (v != null) setState(() { _pageSize = v; _page = 1; });
+                },
+              ),
+            ]),
+          ]),
     );
   }
 
-  // ── Table ────────────────────────────────────────────────────────────────────
+  // ── Контент + пагинация ──────────────────────────────────────────────────
 
-  Widget _buildTable(BuildContext context, List<Person> people) {
-    if (people.isEmpty) {
+  Widget _buildContent(BuildContext context, List<Person> sorted) {
+    if (sorted.isEmpty) {
       return Center(
         child: Column(mainAxisSize: MainAxisSize.min, children: [
-          Icon(Icons.people_outline, size: 72, color: Colors.grey.shade300),
+          Icon(Icons.people_outline,
+              size: 72, color: Colors.grey.shade300),
           const SizedBox(height: 16),
           Text('Участники не найдены',
-              style: TextStyle(fontSize: 16, color: Colors.grey.shade400)),
+              style: TextStyle(
+                  fontSize: 16, color: Colors.grey.shade400)),
         ]),
       );
     }
 
-    final sortIndex = _sortCol?.index;
+    final total = sorted.length;
+    final pageCount = (total / _pageSize).ceil().clamp(1, 99999);
+    // Корректируем страницу если вышла за пределы
+    if (_page > pageCount) {
+      WidgetsBinding.instance
+          .addPostFrameCallback((_) => setState(() => _page = pageCount));
+    }
+    final start = (_page - 1) * _pageSize;
+    final end = min(start + _pageSize, total);
+    final pageItems = sorted.sublist(start, end);
 
     return SingleChildScrollView(
       padding: const EdgeInsets.all(28),
-      child: Card(
-        child: ClipRRect(
-          borderRadius: BorderRadius.circular(12),
-          child: SizedBox(
-            width: double.infinity,
-            child: DataTable(
-              sortColumnIndex: sortIndex,
-              sortAscending: _sortAsc,
-              columnSpacing: 16,
-              horizontalMargin: 24,
-              headingRowHeight: 44,
-              dataRowMinHeight: 52,
-              dataRowMaxHeight: 52,
-              headingRowColor:
-                  WidgetStateProperty.all(const Color(0xFFF8FAFC)),
-              dividerThickness: 1,
-              columns: [
-                DataColumn(
-                  label: const _ColHeader('ФИО'),
-                  onSort: (_, asc) => _onSort(_SortCol.name, asc),
-                ),
-                DataColumn(
-                  label: const _ColHeader('Роль'),
-                  onSort: (_, asc) => _onSort(_SortCol.role, asc),
-                ),
-                DataColumn(
-                  label: const _ColHeader('Группа'),
-                  onSort: (_, asc) => _onSort(_SortCol.group, asc),
-                ),
-                const DataColumn(label: _ColHeader('Аккаунт')),
-                const DataColumn(label: _ColHeader('Действия')),
-              ],
-              rows: people.map((p) => _buildRow(context, p)).toList(),
-            ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          _buildTable(context, pageItems),
+          const SizedBox(height: 12),
+          _buildPaginationBar(total, pageCount, start + 1, end),
+        ],
+      ),
+    );
+  }
+
+  // ── Таблица ──────────────────────────────────────────────────────────────
+
+  Widget _buildTable(BuildContext context, List<Person> people) {
+    return Card(
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(12),
+        child: SizedBox(
+          width: double.infinity,
+          child: DataTable(
+            sortColumnIndex: _sortCol?.index,
+            sortAscending: _sortAsc,
+            columnSpacing: 16,
+            horizontalMargin: 24,
+            headingRowHeight: 44,
+            dataRowMinHeight: 52,
+            dataRowMaxHeight: 52,
+            headingRowColor:
+                WidgetStateProperty.all(const Color(0xFFF8FAFC)),
+            dividerThickness: 1,
+            columns: [
+              DataColumn(
+                label: const _ColHeader('ФИО'),
+                onSort: (_, asc) => _onSort(_SortCol.name, asc),
+              ),
+              DataColumn(
+                label: const _ColHeader('Роль'),
+                onSort: (_, asc) => _onSort(_SortCol.role, asc),
+              ),
+              DataColumn(
+                label: const _ColHeader('Группа'),
+                onSort: (_, asc) => _onSort(_SortCol.group, asc),
+              ),
+              const DataColumn(label: _ColHeader('Аккаунт')),
+              const DataColumn(label: _ColHeader('Действия')),
+            ],
+            rows: people.map((p) => _buildRow(context, p)).toList(),
           ),
         ),
       ),
     );
   }
+
+  // ── Строка таблицы ───────────────────────────────────────────────────────
 
   DataRow _buildRow(BuildContext context, Person person) {
     final isTeacher = person.role.toLowerCase() == 'teacher';
@@ -213,7 +345,8 @@ class _PeopleScreenState extends ConsumerState<PeopleScreen> {
               color: Color(0xFF111827)))),
       DataCell(_RoleBadge(role: person.role)),
       DataCell(Text(person.group ?? '—',
-          style: const TextStyle(fontSize: 14, color: Color(0xFF4B5563)))),
+          style: const TextStyle(
+              fontSize: 14, color: Color(0xFF4B5563)))),
       DataCell(
         person.hasUser
             ? Row(mainAxisSize: MainAxisSize.min, children: [
@@ -259,15 +392,91 @@ class _PeopleScreenState extends ConsumerState<PeopleScreen> {
     ]);
   }
 
-  // ── Teacher subjects dialog ──────────────────────────────────────────────────
+  // ── Пагинация ────────────────────────────────────────────────────────────
+
+  Widget _buildPaginationBar(
+      int total, int pageCount, int rangeStart, int rangeEnd) {
+    return Row(
+      children: [
+        Text(
+          '$rangeStart–$rangeEnd из $total',
+          style: TextStyle(fontSize: 13, color: Colors.grey.shade600),
+        ),
+        const Spacer(),
+        // Быстрый переход к первой
+        IconButton(
+          icon: const Icon(Icons.first_page_rounded),
+          iconSize: 20,
+          color: _page > 1
+              ? const Color(0xFF1E3A5F)
+              : Colors.grey.shade300,
+          tooltip: 'Первая страница',
+          onPressed:
+              _page > 1 ? () => setState(() => _page = 1) : null,
+        ),
+        IconButton(
+          icon: const Icon(Icons.chevron_left_rounded),
+          iconSize: 20,
+          color: _page > 1
+              ? const Color(0xFF1E3A5F)
+              : Colors.grey.shade300,
+          tooltip: 'Предыдущая',
+          onPressed: _page > 1
+              ? () => setState(() => _page--)
+              : null,
+        ),
+        Container(
+          padding:
+              const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+          decoration: BoxDecoration(
+            border: Border.all(color: Colors.grey.shade200),
+            borderRadius: BorderRadius.circular(8),
+            color: const Color(0xFFF8FAFC),
+          ),
+          child: Text(
+            '$_page / $pageCount',
+            style: const TextStyle(
+                fontSize: 13,
+                fontWeight: FontWeight.w600,
+                color: Color(0xFF1E3A5F)),
+          ),
+        ),
+        IconButton(
+          icon: const Icon(Icons.chevron_right_rounded),
+          iconSize: 20,
+          color: _page < pageCount
+              ? const Color(0xFF1E3A5F)
+              : Colors.grey.shade300,
+          tooltip: 'Следующая',
+          onPressed: _page < pageCount
+              ? () => setState(() => _page++)
+              : null,
+        ),
+        // Быстрый переход к последней
+        IconButton(
+          icon: const Icon(Icons.last_page_rounded),
+          iconSize: 20,
+          color: _page < pageCount
+              ? const Color(0xFF1E3A5F)
+              : Colors.grey.shade300,
+          tooltip: 'Последняя страница',
+          onPressed: _page < pageCount
+              ? () => setState(() => _page = pageCount)
+              : null,
+        ),
+      ],
+    );
+  }
+
+  // ── Teacher subjects dialog ──────────────────────────────────────────────
 
   Future<void> _showSubjectsDialog(
       BuildContext context, Person person) async {
     await showDialog<void>(
       context: context,
       builder: (ctx) => Dialog(
-        shape:
-            RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(16)),
         child: SizedBox(
           width: 580,
           child: _TeacherSubjectsDialog(person: person),
@@ -276,23 +485,28 @@ class _PeopleScreenState extends ConsumerState<PeopleScreen> {
     );
   }
 
-  // ── Edit dialog ──────────────────────────────────────────────────────────────
+  // ── Edit dialog ──────────────────────────────────────────────────────────
 
-  Future<void> _showEditDialog(BuildContext context, Person person) async {
-    final lastCtrl   = TextEditingController(text: person.lastName);
-    final firstCtrl  = TextEditingController(text: person.firstName);
-    final middleCtrl = TextEditingController(text: person.middleName ?? '');
-    final groupCtrl  = TextEditingController(text: person.group ?? '');
+  Future<void> _showEditDialog(
+      BuildContext context, Person person) async {
+    final lastCtrl = TextEditingController(text: person.lastName);
+    final firstCtrl = TextEditingController(text: person.firstName);
+    final middleCtrl =
+        TextEditingController(text: person.middleName ?? '');
+    final groupCtrl =
+        TextEditingController(text: person.group ?? '');
     String selectedRole = person.role;
 
     final confirmed = await showDialog<bool>(
       context: context,
-      builder: (ctx) => StatefulBuilder(builder: (ctx, setState) {
+      builder: (ctx) =>
+          StatefulBuilder(builder: (ctx, setState) {
         return AlertDialog(
           shape: RoundedRectangleBorder(
               borderRadius: BorderRadius.circular(16)),
           title: Row(children: [
-            const Icon(Icons.edit_outlined, color: Color(0xFF1E3A5F)),
+            const Icon(Icons.edit_outlined,
+                color: Color(0xFF1E3A5F)),
             const SizedBox(width: 10),
             Expanded(
               child: Text('Редактировать: ${person.fullName}',
@@ -338,9 +552,11 @@ class _PeopleScreenState extends ConsumerState<PeopleScreen> {
                   DropdownMenuItem(
                       value: 'student', child: Text('Студент')),
                   DropdownMenuItem(
-                      value: 'teacher', child: Text('Преподаватель')),
+                      value: 'teacher',
+                      child: Text('Преподаватель')),
                 ],
-                onChanged: (v) => setState(() => selectedRole = v!),
+                onChanged: (v) =>
+                    setState(() => selectedRole = v!),
               ),
               const SizedBox(height: 14),
               _DialogField(
@@ -372,18 +588,27 @@ class _PeopleScreenState extends ConsumerState<PeopleScreen> {
 
     final ok = await ref.read(peopleProvider.notifier).updatePerson(
           person.id,
-          firstName:  firstCtrl.text.trim().isEmpty  ? null : firstCtrl.text.trim(),
-          lastName:   lastCtrl.text.trim().isEmpty   ? null : lastCtrl.text.trim(),
-          middleName: middleCtrl.text.trim().isEmpty ? '' : middleCtrl.text.trim(),
-          role:       selectedRole,
-          group:      groupCtrl.text.trim().isEmpty  ? '' : groupCtrl.text.trim(),
+          firstName: firstCtrl.text.trim().isEmpty
+              ? null
+              : firstCtrl.text.trim(),
+          lastName: lastCtrl.text.trim().isEmpty
+              ? null
+              : lastCtrl.text.trim(),
+          middleName: middleCtrl.text.trim().isEmpty
+              ? ''
+              : middleCtrl.text.trim(),
+          role: selectedRole,
+          group: groupCtrl.text.trim().isEmpty
+              ? ''
+              : groupCtrl.text.trim(),
         );
 
     if (!context.mounted) return;
-    _showSnack(context, ok ? 'Участник обновлён' : 'Ошибка при обновлении', ok);
+    _showSnack(context,
+        ok ? 'Участник обновлён' : 'Ошибка при обновлении', ok);
   }
 
-  // ── Delete dialog ────────────────────────────────────────────────────────────
+  // ── Delete dialog ────────────────────────────────────────────────────────
 
   Future<void> _showDeleteDialog(
       BuildContext context, Person person) async {
@@ -393,21 +618,28 @@ class _PeopleScreenState extends ConsumerState<PeopleScreen> {
         shape: RoundedRectangleBorder(
             borderRadius: BorderRadius.circular(16)),
         title: const Row(children: [
-          Icon(Icons.warning_amber_rounded, color: Color(0xFFF59E0B)),
+          Icon(Icons.warning_amber_rounded,
+              color: Color(0xFFF59E0B)),
           SizedBox(width: 10),
-          Text('Удалить участника?', style: TextStyle(fontSize: 18)),
+          Text('Удалить участника?',
+              style: TextStyle(fontSize: 18)),
         ]),
         content: RichText(
           text: TextSpan(
             style: const TextStyle(
-                fontSize: 14, color: Color(0xFF4B5563), height: 1.5),
+                fontSize: 14,
+                color: Color(0xFF4B5563),
+                height: 1.5),
             children: [
-              const TextSpan(text: 'Вы собираетесь удалить участника '),
+              const TextSpan(
+                  text: 'Вы собираетесь удалить участника '),
               TextSpan(
                   text: '"${person.fullName}"',
-                  style: const TextStyle(fontWeight: FontWeight.w600)),
+                  style:
+                      const TextStyle(fontWeight: FontWeight.w600)),
               const TextSpan(
-                  text: '. Аккаунт в мессенджере не будет удалён.'),
+                  text:
+                      '. Аккаунт в мессенджере не будет удалён.'),
             ],
           ),
         ),
@@ -431,25 +663,30 @@ class _PeopleScreenState extends ConsumerState<PeopleScreen> {
 
     if (confirmed != true || !context.mounted) return;
 
-    final ok = await ref.read(peopleProvider.notifier).deletePerson(person.id);
+    final ok =
+        await ref.read(peopleProvider.notifier).deletePerson(person.id);
     if (!context.mounted) return;
-    _showSnack(
-        context, ok ? '${person.fullName} удалён' : 'Ошибка при удалении', ok);
+    _showSnack(context,
+        ok ? '${person.fullName} удалён' : 'Ошибка при удалении',
+        ok);
   }
 
-  // ── Error / snack ────────────────────────────────────────────────────────────
+  // ── Error / snack ────────────────────────────────────────────────────────
 
   Widget _buildError(String message) {
     return Center(
       child: Column(mainAxisSize: MainAxisSize.min, children: [
-        const Icon(Icons.error_outline_rounded, size: 52, color: Colors.red),
+        const Icon(Icons.error_outline_rounded,
+            size: 52, color: Colors.red),
         const SizedBox(height: 12),
         Text(message,
-            style: const TextStyle(color: Colors.red, fontSize: 14)),
+            style:
+                const TextStyle(color: Colors.red, fontSize: 14)),
         const SizedBox(height: 16),
         ElevatedButton.icon(
-          onPressed: () => ref.read(peopleProvider.notifier).applyFilter(
-              ref.read(peopleFilterProvider)),
+          onPressed: () => ref
+              .read(peopleProvider.notifier)
+              .applyFilter(ref.read(peopleFilterProvider)),
           icon: const Icon(Icons.refresh),
           label: const Text('Повторить'),
         ),
@@ -460,14 +697,66 @@ class _PeopleScreenState extends ConsumerState<PeopleScreen> {
   void _showSnack(BuildContext context, String text, bool ok) {
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(
       content: Text(text),
-      backgroundColor: ok ? Colors.green.shade700 : Colors.red.shade700,
+      backgroundColor:
+          ok ? Colors.green.shade700 : Colors.red.shade700,
       behavior: SnackBarBehavior.floating,
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+      shape:
+          RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
     ));
   }
 }
 
-// ── Teacher subjects dialog widget ─────────────────────────────────────────────
+// ── _ToolbarDropdown ──────────────────────────────────────────────────────────
+
+class _ToolbarDropdown<T> extends StatelessWidget {
+  final IconData icon;
+  final String hint;
+  final T value;
+  final List<DropdownMenuItem<T>> items;
+  final ValueChanged<T?> onChanged;
+
+  const _ToolbarDropdown({
+    required this.icon,
+    required this.hint,
+    required this.value,
+    required this.items,
+    required this.onChanged,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      height: 38,
+      padding: const EdgeInsets.symmetric(horizontal: 12),
+      decoration: BoxDecoration(
+        border: Border.all(color: Colors.grey.shade300),
+        borderRadius: BorderRadius.circular(8),
+        color: Colors.white,
+      ),
+      child: Row(mainAxisSize: MainAxisSize.min, children: [
+        Icon(icon, size: 16, color: Colors.grey.shade500),
+        const SizedBox(width: 6),
+        DropdownButtonHideUnderline(
+          child: DropdownButton<T>(
+            value: value,
+            hint: Text(hint,
+                style: const TextStyle(
+                    fontSize: 13, color: Colors.grey)),
+            style: const TextStyle(
+                fontSize: 13, color: Color(0xFF111827)),
+            icon: Icon(Icons.arrow_drop_down,
+                color: Colors.grey.shade500, size: 20),
+            isDense: true,
+            items: items,
+            onChanged: onChanged,
+          ),
+        ),
+      ]),
+    );
+  }
+}
+
+// ── Teacher subjects dialog ───────────────────────────────────────────────────
 
 class _TeacherSubjectsDialog extends ConsumerStatefulWidget {
   final Person person;
@@ -502,19 +791,22 @@ class _TeacherSubjectsDialogState
     try {
       final subRepo = ref.read(subjectsRepositoryProvider);
       final grpRepo = ref.read(groupsRepositoryProvider);
-      final assignments = await subRepo.fetchTeacherAssignments(widget.person.id);
-      final subjects    = await subRepo.fetchSubjects();
-      final groups      = await grpRepo.fetchGroups();
+      final assignments =
+          await subRepo.fetchTeacherAssignments(widget.person.id);
+      final subjects = await subRepo.fetchSubjects();
+      final groups = await grpRepo.fetchGroups();
       if (mounted) {
         setState(() {
           _assignments = assignments;
-          _subjects    = subjects;
-          _groups      = groups;
-          _loading     = false;
+          _subjects = subjects;
+          _groups = groups;
+          _loading = false;
         });
       }
     } catch (e) {
-      if (mounted) setState(() { _error = e.toString(); _loading = false; });
+      if (mounted) {
+        setState(() { _error = e.toString(); _loading = false; });
+      }
     }
   }
 
@@ -522,9 +814,7 @@ class _TeacherSubjectsDialogState
     if (_selectedSubject == null || _selectedGroup == null) return;
     setState(() => _adding = true);
     try {
-      await ref
-          .read(subjectsRepositoryProvider)
-          .addAssignment(
+      await ref.read(subjectsRepositoryProvider).addAssignment(
             widget.person.id,
             _selectedSubject!.id,
             _selectedGroup!.name,
@@ -535,7 +825,6 @@ class _TeacherSubjectsDialogState
           _selectedGroup = null;
           _adding = false;
         });
-        // Reload assignments to get fresh data with subject names
         final updated = await ref
             .read(subjectsRepositoryProvider)
             .fetchTeacherAssignments(widget.person.id);
@@ -558,8 +847,8 @@ class _TeacherSubjectsDialogState
           .read(subjectsRepositoryProvider)
           .removeAssignment(widget.person.id, a.id);
       if (mounted) {
-        setState(() =>
-            _assignments = _assignments!.where((x) => x.id != a.id).toList());
+        setState(() => _assignments =
+            _assignments!.where((x) => x.id != a.id).toList());
       }
     } catch (e) {
       if (mounted) {
@@ -581,10 +870,12 @@ class _TeacherSubjectsDialogState
           padding: const EdgeInsets.fromLTRB(24, 20, 16, 16),
           decoration: const BoxDecoration(
             color: Color(0xFF0F2440),
-            borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+            borderRadius:
+                BorderRadius.vertical(top: Radius.circular(16)),
           ),
           child: Row(children: [
-            const Icon(Icons.school_rounded, color: Colors.white, size: 20),
+            const Icon(Icons.school_rounded,
+                color: Colors.white, size: 20),
             const SizedBox(width: 10),
             Expanded(
               child: Text(
@@ -596,7 +887,8 @@ class _TeacherSubjectsDialogState
               ),
             ),
             IconButton(
-              icon: const Icon(Icons.close, color: Colors.white70, size: 20),
+              icon: const Icon(Icons.close,
+                  color: Colors.white70, size: 20),
               onPressed: () => Navigator.pop(context),
               padding: EdgeInsets.zero,
               constraints: const BoxConstraints(),
@@ -614,32 +906,35 @@ class _TeacherSubjectsDialogState
               : _error != null
                   ? Padding(
                       padding: const EdgeInsets.all(24),
-                      child: Column(mainAxisSize: MainAxisSize.min, children: [
-                        const Icon(Icons.error_outline,
-                            color: Colors.red, size: 36),
-                        const SizedBox(height: 8),
-                        Text(_error!,
-                            style: const TextStyle(color: Colors.red)),
-                        TextButton.icon(
-                          onPressed: _load,
-                          icon: const Icon(Icons.refresh),
-                          label: const Text('Повторить'),
-                        ),
-                      ]),
+                      child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            const Icon(Icons.error_outline,
+                                color: Colors.red, size: 36),
+                            const SizedBox(height: 8),
+                            Text(_error!,
+                                style: const TextStyle(
+                                    color: Colors.red)),
+                            TextButton.icon(
+                              onPressed: _load,
+                              icon: const Icon(Icons.refresh),
+                              label: const Text('Повторить'),
+                            ),
+                          ]),
                     )
                   : SingleChildScrollView(
                       padding: const EdgeInsets.all(20),
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          // Assignments list
                           if (_assignments!.isEmpty)
                             Container(
                               width: double.infinity,
                               padding: const EdgeInsets.all(20),
                               decoration: BoxDecoration(
                                 color: const Color(0xFFF8FAFC),
-                                borderRadius: BorderRadius.circular(10),
+                                borderRadius:
+                                    BorderRadius.circular(10),
                                 border: Border.all(
                                     color: Colors.grey.shade200),
                               ),
@@ -657,9 +952,11 @@ class _TeacherSubjectsDialogState
                                     fontWeight: FontWeight.w600,
                                     color: Color(0xFF374151))),
                             const SizedBox(height: 10),
-                            ...(_assignments!.map((a) => _AssignmentTile(
+                            ...(_assignments!.map((a) =>
+                                _AssignmentTile(
                                   assignment: a,
-                                  onDelete: () => _removeAssignment(a),
+                                  onDelete: () =>
+                                      _removeAssignment(a),
                                 ))),
                           ],
                           const SizedBox(height: 20),
@@ -671,7 +968,6 @@ class _TeacherSubjectsDialogState
                                   fontWeight: FontWeight.w600,
                                   color: Color(0xFF374151))),
                           const SizedBox(height: 12),
-                          // Subject dropdown
                           DropdownButtonFormField<Subject>(
                             initialValue: _selectedSubject,
                             decoration: InputDecoration(
@@ -696,7 +992,6 @@ class _TeacherSubjectsDialogState
                                 setState(() => _selectedSubject = v),
                           ),
                           const SizedBox(height: 12),
-                          // Group dropdown
                           DropdownButtonFormField<GroupItem>(
                             initialValue: _selectedGroup,
                             decoration: InputDecoration(
@@ -725,12 +1020,11 @@ class _TeacherSubjectsDialogState
                             width: double.infinity,
                             height: 44,
                             child: ElevatedButton.icon(
-                              onPressed:
-                                  (_selectedSubject == null ||
-                                          _selectedGroup == null ||
-                                          _adding)
-                                      ? null
-                                      : _addAssignment,
+                              onPressed: (_selectedSubject == null ||
+                                      _selectedGroup == null ||
+                                      _adding)
+                                  ? null
+                                  : _addAssignment,
                               style: ElevatedButton.styleFrom(
                                 backgroundColor:
                                     const Color(0xFF059669),
@@ -770,7 +1064,8 @@ class _AssignmentTile extends StatelessWidget {
   Widget build(BuildContext context) {
     return Container(
       margin: const EdgeInsets.only(bottom: 8),
-      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+      padding:
+          const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
       decoration: BoxDecoration(
         color: const Color(0xFFF0FDF4),
         borderRadius: BorderRadius.circular(8),
@@ -806,7 +1101,8 @@ class _AssignmentTile extends StatelessWidget {
           icon: const Icon(Icons.close, size: 16),
           color: Colors.red.shade400,
           padding: EdgeInsets.zero,
-          constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
+          constraints:
+              const BoxConstraints(minWidth: 28, minHeight: 28),
           onPressed: onDelete,
         ),
       ]),
@@ -814,7 +1110,7 @@ class _AssignmentTile extends StatelessWidget {
   }
 }
 
-// ── Shared widgets ─────────────────────────────────────────────────────────────
+// ── Общие виджеты ─────────────────────────────────────────────────────────────
 
 class _ColHeader extends StatelessWidget {
   final String text;
@@ -834,7 +1130,9 @@ class _DialogField extends StatelessWidget {
   final IconData icon;
 
   const _DialogField(
-      {required this.controller, required this.label, required this.icon});
+      {required this.controller,
+      required this.label,
+      required this.icon});
 
   @override
   Widget build(BuildContext context) {
@@ -843,7 +1141,8 @@ class _DialogField extends StatelessWidget {
       decoration: InputDecoration(
         labelText: label,
         prefixIcon: Icon(icon, size: 20),
-        border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
+        border:
+            OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
         contentPadding:
             const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
       ),
@@ -862,7 +1161,9 @@ class _RoleBadge extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
       decoration: BoxDecoration(
-        color: isStudent ? const Color(0xFFEFF6FF) : const Color(0xFFF5F3FF),
+        color: isStudent
+            ? const Color(0xFFEFF6FF)
+            : const Color(0xFFF5F3FF),
         borderRadius: BorderRadius.circular(20),
         border: Border.all(
             color: isStudent

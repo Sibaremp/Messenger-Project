@@ -29,7 +29,8 @@ public class MessageService(AppDbContext db, ChatService chatService, Notificati
             SenderId = senderId,
             Text = chat.IsAcademic ? profanity.Filter(req.Text) : req.Text,
             ReplyToId = req.ReplyTo?.MessageId,
-            Status = "sent"
+            Status = "sent",
+            PostAsCommunity = req.PostAsCommunity
         };
 
         db.Messages.Add(message);

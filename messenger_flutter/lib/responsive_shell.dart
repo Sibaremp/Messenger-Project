@@ -4,20 +4,22 @@ import 'models.dart';
 import 'app_constants.dart';
 import 'services/chat_service.dart';
 import 'services/auth_service.dart' as svc;
+import 'services/local_cache_service.dart';
 import 'services/signaling_service.dart';
 import 'services/call_state.dart';
 import 'services/notification_service.dart';
 import 'services/notification_router.dart';
 import 'auth_screen.dart' show AuthScreen;
-import 'profile_screen.dart' show ProfileAvatar;
 import 'widgets/sidebar.dart';
 import 'widgets/chat_widgets.dart';
+import 'widgets/member_picker.dart';
+import 'widgets/settings_overlay.dart';
 import 'screens/chat_screen.dart';
 import 'screens/chat_list_screen.dart';
 import 'screens/call_screen.dart';
-import 'widgets/profile_panel.dart';
 import 'widgets/notifications_panel.dart';
 import 'screens/search_screen.dart';
+import 'utils/app_snack.dart';
 
 /// Адаптивная оболочка приложения.
 /// - Узкий экран (<800): стандартная мобильная навигация (ChatListScreen).
@@ -48,7 +50,7 @@ class _ResponsiveShellState extends State<ResponsiveShell>
   String? _myAvatarPath;
   List<Chat> _chats = [];
   bool _isSearching = false;
-  late StreamSubscription<ChatEvent> _eventSub;
+  StreamSubscription<ChatEvent>? _eventSub;
   late final TabController _chatTabController;
   late final TabController _academicTabController;
 
@@ -64,19 +66,27 @@ class _ResponsiveShellState extends State<ResponsiveShell>
     super.initState();
     _chatTabController = TabController(length: 2, vsync: this);
     _academicTabController = TabController(length: 2, vsync: this);
-    _loadChats();
-    _loadAvatar();
-    _loadContacts();
-    _eventSub = widget.service.events.listen((event) {
+
+    // Откладываем все операции, которые могут вызвать setState, до первого кадра.
+    // Это предотвращает "setState() called during build" — TabBarView синхронно
+    // уведомляет слушателей TabController прямо внутри buildScope().
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
       _loadChats();
-      if (event is ConnectionRestored) {
-        // SignalR переподключился после простоя сервера — обновляем и контакты.
-        _loadContacts();
-      }
-      if (event is SessionTerminated && event.isCurrent) {
-        _logout();
-      }
+      _loadAvatar();
+      _loadContacts();
+      _eventSub = widget.service.events.listen((event) {
+        if (!mounted) return;
+        _loadChats();
+        if (event is ConnectionRestored) {
+          _loadContacts();
+        }
+        if (event is SessionTerminated && event.isCurrent) {
+          _logout();
+        }
+      });
     });
+
     _incomingCallSub =
         widget.signalingService.onIncomingCall.listen(_onIncomingCall);
 
@@ -90,7 +100,7 @@ class _ResponsiveShellState extends State<ResponsiveShell>
   void dispose() {
     _chatTabController.dispose();
     _academicTabController.dispose();
-    _eventSub.cancel();
+    _eventSub?.cancel();
     _incomingCallSub?.cancel();
     super.dispose();
   }
@@ -130,9 +140,22 @@ class _ResponsiveShellState extends State<ResponsiveShell>
   }
 
   Future<void> _loadChats() async {
+    // Показываем кэшированные чаты мгновенно (до ответа сервера)
+    final uid = widget.auth.currentUser?.id ?? '';
+    final cached = await LocalCacheService.instance.loadCachedChats(currentUserId: uid);
+    if (mounted && cached.isNotEmpty && _chats.isEmpty) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted && _chats.isEmpty) {
+          setState(() => _chats = List.from(cached));
+        }
+      });
+    }
+
     try {
       final chats = await widget.service.loadChats();
       if (!mounted) return;
+      // Сохраняем актуальный список в кэш
+      unawaited(LocalCacheService.instance.saveChats(chats, currentUserId: uid));
       setState(() {
         _chats = List.from(chats);
         if (_selectedChat != null) {
@@ -154,7 +177,9 @@ class _ResponsiveShellState extends State<ResponsiveShell>
   Future<void> _loadAvatar() async {
     final user = widget.auth.currentUser;
     if (user?.avatarUrl != null) {
-      if (mounted) setState(() => _myAvatarPath = user!.avatarUrl);
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) setState(() => _myAvatarPath = user!.avatarUrl);
+      });
     }
   }
 
@@ -168,6 +193,20 @@ class _ResponsiveShellState extends State<ResponsiveShell>
     } catch (_) {
       // Сервер недоступен — контакты останутся пустыми
     }
+  }
+
+  /// Отображаемое имя чата: для личных чатов — ФИО из контактов (если есть),
+  /// иначе из участников чата, иначе логин.
+  String _chatDisplayName(Chat chat) {
+    if (chat.type != ChatType.direct) return chat.name;
+    final contactName =
+        _contacts.where((c) => c.name == chat.name).firstOrNull?.bestName;
+    if (contactName != null) return contactName;
+    final memberName = chat.members
+        .where((m) => m.name == chat.name)
+        .firstOrNull
+        ?.displayName;
+    return memberName ?? chat.name;
   }
 
   List<Chat> get _sortedChats =>
@@ -230,6 +269,20 @@ class _ResponsiveShellState extends State<ResponsiveShell>
     NotificationService.instance.openChat(chat.id);
   }
 
+  /// Открывает личный чат из панели (embedded mode).
+  /// Если чата ещё нет в списке — добавляет его, затем переключает панель.
+  void _onOpenDirectChat(Chat chat) {
+    setState(() {
+      final idx = _chats.indexWhere((c) => c.id == chat.id);
+      if (idx == -1) {
+        _chats.add(chat);
+      } else {
+        _chats[idx] = chat;
+      }
+    });
+    _selectChat(chat);
+  }
+
 
   /// Показывать ли кнопку действия в sidebar
   bool get _showActionButton {
@@ -266,9 +319,7 @@ class _ResponsiveShellState extends State<ResponsiveShell>
 
     // Академические группы может создавать только преподаватель
     if (isAcademic && widget.auth.currentUser?.isTeacher != true) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-        content: Text('Только преподаватель может создавать академические группы'),
-      ));
+      AppSnack.info(context, 'Только преподаватель может создавать академические группы');
       return;
     }
 
@@ -292,8 +343,8 @@ class _ResponsiveShellState extends State<ResponsiveShell>
             ),
             const SizedBox(height: 8),
             ListTile(
-              leading: const CircleAvatar(
-                backgroundColor: AppColors.primary,
+              leading: CircleAvatar(
+                backgroundColor: Theme.of(context).colorScheme.primary,
                 child: Icon(Icons.group, color: AppColors.textLight),
               ),
               title: Text(isAcademic ? 'Создать академическую группу' : 'Создать группу',
@@ -304,8 +355,8 @@ class _ResponsiveShellState extends State<ResponsiveShell>
               },
             ),
             ListTile(
-              leading: const CircleAvatar(
-                backgroundColor: AppColors.primary,
+              leading: CircleAvatar(
+                backgroundColor: Theme.of(context).colorScheme.primary,
                 child: Icon(Icons.campaign, color: AppColors.textLight),
               ),
               title: Text(isAcademic ? 'Создать академическое сообщество' : 'Создать сообщество',
@@ -374,12 +425,33 @@ class _ResponsiveShellState extends State<ResponsiveShell>
             });
           } catch (e) {
             if (!mounted) return;
-            ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(content: Text('Ошибка: $e')),
-            );
+                        AppSnack.error(context, 'Ошибка: $e');
           }
         },
       ),
+    );
+  }
+
+  /// Открывает главное меню настроек (пункт «Настройки» в сайдбаре).
+  void _openSettings() {
+    showSettingsOverlay(
+      context,
+      auth: widget.auth,
+      service: widget.service,
+      onAvatarChanged: _loadAvatar,
+      onLogout: _logout,
+    );
+  }
+
+  /// Открывает только страницу профиля (нажатие на карточку пользователя).
+  void _openProfile() {
+    showSettingsOverlay(
+      context,
+      auth: widget.auth,
+      service: widget.service,
+      onAvatarChanged: _loadAvatar,
+      onLogout: _logout,
+      profileOnly: true,
     );
   }
 
@@ -418,70 +490,58 @@ class _ResponsiveShellState extends State<ResponsiveShell>
         signalingService: widget.signalingService,
       );
     }
-    final isDark = Theme.of(context).brightness == Brightness.dark;
-
     return Scaffold(
       body: Row(
         children: [
           // ── Sidebar (полная высота) ─────────────────────────────
           Sidebar(
             selected: _nav,
-            onSelect: (nav) => setState(() {
-              _nav = nav;
-              _isSearching = false;
-            }),
+            onSelect: (nav) {
+              if (nav == SidebarNav.profile) {
+                _openSettings();
+              } else {
+                setState(() {
+                  _nav = nav;
+                  _isSearching = false;
+                });
+              }
+            },
             onNewChat: _showCreateOptions,
             onLogout: _logout,
             actionLabel: _sidebarActionLabel,
             actionIcon: _sidebarActionIcon,
             showActionButton: _showActionButton,
+            displayName: widget.auth.currentUser?.displayName,
+            userName: widget.auth.currentUser?.name,
+            userAvatarPath: _myAvatarPath,
+            chatUnreadCount: _regularChats.fold(
+                0, (sum, c) => sum + c.unreadCount),
+            onSettingsTap: _openProfile,
           ),
           VerticalDivider(
               width: 1, thickness: 1,
               color: Theme.of(context).dividerColor),
 
-          // ── Контент (поиск сверху + панели) ─────────────────────
+          // ── Контент (панели без общего TopBar) ──────────────────
           Expanded(
-            child: Column(
+            child: Row(
               children: [
-                // Строка поиска + аватар
-                _TopBar(
-                  avatarPath: _myAvatarPath,
-                  isDark: isDark,
-                  onAvatarTap: () => setState(() {
-                    _nav = SidebarNav.profile;
-                    _isSearching = false;
-                  }),
-                  onSearchTap: () => setState(() => _isSearching = true),
-                  isSearching: _isSearching,
-                  onSearchClose: () => setState(() => _isSearching = false),
-                ),
-                Divider(height: 1, thickness: 1,
-                    color: Theme.of(context).dividerColor),
-
-                // Основное содержимое
-                Expanded(
-                  child: Row(
-                    children: [
-                      // ── Средняя панель ─────────────────────────
-                      if (_nav == SidebarNav.chat || _nav == SidebarNav.academic)
-                        SizedBox(
-                          width: AppSizes.middlePanelWidth,
-                          child: _nav == SidebarNav.academic
-                              ? _buildAcademicListPanel()
-                              : _buildChatListPanel(),
-                        ),
-                      if (_nav == SidebarNav.chat || _nav == SidebarNav.academic)
-                        VerticalDivider(
-                            width: 1, thickness: 1,
-                            color: Theme.of(context).dividerColor),
-
-                      // ── Правая панель ──────────────────────────
-                      Expanded(
-                        child: _buildRightPanel(),
-                      ),
-                    ],
+                // ── Средняя панель ─────────────────────────────
+                if (_nav == SidebarNav.chat || _nav == SidebarNav.academic)
+                  SizedBox(
+                    width: AppSizes.middlePanelWidth,
+                    child: _nav == SidebarNav.academic
+                        ? _buildAcademicListPanel()
+                        : _buildChatListPanel(),
                   ),
+                if (_nav == SidebarNav.chat || _nav == SidebarNav.academic)
+                  VerticalDivider(
+                      width: 1, thickness: 1,
+                      color: Theme.of(context).dividerColor),
+
+                // ── Правая панель ───────────────────────────────
+                Expanded(
+                  child: _buildRightPanel(),
                 ),
               ],
             ),
@@ -511,13 +571,8 @@ class _ResponsiveShellState extends State<ResponsiveShell>
 
     switch (_nav) {
       case SidebarNav.profile:
-        return ProfilePanel(
-          auth: widget.auth,
-          onAvatarChanged: _loadAvatar,
-          onLogout: _logout,
-          service: widget.service,
-          onForceLogout: _logout,
-        );
+        // Settings are shown as an overlay — fall through to empty panel.
+        return const _EmptyPanel();
       case SidebarNav.notifications:
         return NotificationsPanel(service: widget.service);
       case SidebarNav.academic:
@@ -543,6 +598,7 @@ class _ResponsiveShellState extends State<ResponsiveShell>
             embedded: true,
             auth: widget.auth,
             signalingService: widget.signalingService,
+            onOpenDirectChat: _onOpenDirectChat,
           );
         }
         return const _EmptyPanel();
@@ -562,26 +618,24 @@ class _ResponsiveShellState extends State<ResponsiveShell>
   // ── Средняя панель: список чатов ───────────────────────────────────────
 
   Widget _buildChatListPanel() {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
     return Column(
       children: [
-        Container(
-          padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
-          child: const Align(
-            alignment: Alignment.centerLeft,
-            child: Text(
-              'Общение',
-              style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold),
-            ),
-          ),
+        _PanelHeader(
+          title: 'Общение',
+          isDark: isDark,
+          isSearching: _isSearching,
+          onSearchTap: () => setState(() => _isSearching = true),
+          onSearchClose: () => setState(() => _isSearching = false),
         ),
         TabBar(
           controller: _chatTabController,
-          indicatorColor: AppColors.primary,
-          labelColor: AppColors.primary,
+          indicatorColor: Theme.of(context).colorScheme.primary,
+          labelColor: Theme.of(context).colorScheme.primary,
           unselectedLabelColor: AppColors.subtle,
           labelStyle: const TextStyle(fontWeight: FontWeight.w600, fontSize: 14),
           tabs: const [Tab(text: 'Личные'), Tab(text: 'Группы')],
-          onTap: (_) => setState(() {}), // обновить sidebar label
+          onTap: (_) => setState(() {}),
         ),
         Expanded(
           child: TabBarView(
@@ -599,27 +653,24 @@ class _ResponsiveShellState extends State<ResponsiveShell>
   // ── Средняя панель: академический раздел ─────────────────────────────────
 
   Widget _buildAcademicListPanel() {
-    // Академический — отдельные чаты с преподавателями
+    final isDark = Theme.of(context).brightness == Brightness.dark;
     return Column(
       children: [
-        Container(
-          padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
-          child: const Align(
-            alignment: Alignment.centerLeft,
-            child: Text(
-              'Академический',
-              style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold),
-            ),
-          ),
+        _PanelHeader(
+          title: 'Академический',
+          isDark: isDark,
+          isSearching: _isSearching,
+          onSearchTap: () => setState(() => _isSearching = true),
+          onSearchClose: () => setState(() => _isSearching = false),
         ),
         TabBar(
           controller: _academicTabController,
-          indicatorColor: AppColors.primary,
-          labelColor: AppColors.primary,
+          indicatorColor: Theme.of(context).colorScheme.primary,
+          labelColor: Theme.of(context).colorScheme.primary,
           unselectedLabelColor: AppColors.subtle,
           labelStyle: const TextStyle(fontWeight: FontWeight.w600, fontSize: 14),
           tabs: const [Tab(text: 'Личные'), Tab(text: 'Группы')],
-          onTap: (_) => setState(() {}), // обновить showActionButton
+          onTap: (_) => setState(() {}),
         ),
         Expanded(
           child: TabBarView(
@@ -649,7 +700,7 @@ class _ResponsiveShellState extends State<ResponsiveShell>
           children: [
             Material(
               color: isSelected
-                  ? AppColors.primary.withValues(alpha: 0.1)
+                  ? Theme.of(context).colorScheme.primary.withValues(alpha: 0.1)
                   : Colors.transparent,
               child: InkWell(
                 onTap: () => setState(() {
@@ -662,14 +713,14 @@ class _ResponsiveShellState extends State<ResponsiveShell>
                   child: Row(
                     children: [
                       ChatAvatar(
-                          type: chat.type, avatarPath: chat.avatarPath, chatName: chat.name),
+                          type: chat.type, avatarPath: chat.avatarPath, chatName: _chatDisplayName(chat)),
                       const SizedBox(width: 12),
                       Expanded(
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
                             Text(
-                              chat.name,
+                              _chatDisplayName(chat),
                               style: const TextStyle(
                                   fontWeight: FontWeight.bold, fontSize: 14),
                               overflow: TextOverflow.ellipsis,
@@ -708,92 +759,83 @@ class _ResponsiveShellState extends State<ResponsiveShell>
   }
 }
 
-// ─── Верхняя панель (поиск + аватар) ────────────────────────────────────────
+// ─── Заголовок средней панели (название + строка поиска) ────────────────────
 
-class _TopBar extends StatelessWidget {
-  final String? avatarPath;
+class _PanelHeader extends StatelessWidget {
+  final String title;
   final bool isDark;
-  final VoidCallback onAvatarTap;
-  final VoidCallback onSearchTap;
   final bool isSearching;
+  final VoidCallback onSearchTap;
   final VoidCallback onSearchClose;
 
-  const _TopBar({
-    required this.avatarPath,
+  const _PanelHeader({
+    required this.title,
     required this.isDark,
-    required this.onAvatarTap,
-    required this.onSearchTap,
     required this.isSearching,
+    required this.onSearchTap,
     required this.onSearchClose,
   });
 
   @override
   Widget build(BuildContext context) {
     return Container(
-      height: 56,
       color: isDark ? const Color(0xFF1A1A1A) : Colors.white,
-      padding: const EdgeInsets.symmetric(horizontal: 16),
-      child: Row(
+      padding: const EdgeInsets.fromLTRB(16, 14, 12, 10),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
         children: [
-          // Поле поиска (ограничено по ширине)
-          ConstrainedBox(
-            constraints: const BoxConstraints(maxWidth: 280),
-            child: GestureDetector(
-              onTap: onSearchTap,
-              child: Container(
-                height: 36,
-                decoration: BoxDecoration(
-                  color: isDark
-                      ? Colors.white.withValues(alpha: 0.08)
-                      : const Color(0xFFF5F5F5),
-                  borderRadius: BorderRadius.circular(8),
-                  border: isSearching
-                      ? Border.all(color: AppColors.primary, width: 1.5)
-                      : null,
-                ),
-                child: Row(
-                  children: [
-                    const SizedBox(width: 10),
-                    Icon(Icons.search,
-                        size: 18,
-                        color: isSearching
-                            ? AppColors.primary
-                            : AppColors.subtle.withValues(alpha: 0.6)),
-                    const SizedBox(width: 8),
-                    Expanded(
-                      child: Text(
-                        'Поиск',
-                        style: TextStyle(
-                          color: AppColors.subtle.withValues(alpha: 0.6),
-                          fontSize: 14,
-                        ),
+          // Заголовок раздела
+          Text(
+            title,
+            style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
+          ),
+          const SizedBox(height: 10),
+          // Строка поиска
+          GestureDetector(
+            onTap: onSearchTap,
+            child: Container(
+              height: 34,
+              decoration: BoxDecoration(
+                color: isDark
+                    ? Colors.white.withValues(alpha: 0.08)
+                    : const Color(0xFFF2F2F2),
+                borderRadius: BorderRadius.circular(8),
+                border: isSearching
+                    ? Border.all(color: Theme.of(context).colorScheme.primary, width: 1.5)
+                    : null,
+              ),
+              child: Row(
+                children: [
+                  const SizedBox(width: 10),
+                  Icon(
+                    Icons.search,
+                    size: 16,
+                    color: isSearching
+                        ? Theme.of(context).colorScheme.primary
+                        : AppColors.subtle.withValues(alpha: 0.55),
+                  ),
+                  const SizedBox(width: 7),
+                  Expanded(
+                    child: Text(
+                      'Поиск',
+                      style: TextStyle(
+                        fontSize: 13,
+                        color: AppColors.subtle.withValues(alpha: 0.55),
                       ),
                     ),
-                    if (isSearching)
-                      GestureDetector(
-                        onTap: onSearchClose,
-                        child: Padding(
-                          padding: const EdgeInsets.only(right: 8),
-                          child: Icon(Icons.close,
-                              size: 16, color: AppColors.subtle),
-                        ),
+                  ),
+                  if (isSearching)
+                    GestureDetector(
+                      onTap: onSearchClose,
+                      child: Padding(
+                        padding: const EdgeInsets.only(right: 8),
+                        child: Icon(Icons.close,
+                            size: 15, color: AppColors.subtle),
                       ),
-                  ],
-                ),
+                    ),
+                ],
               ),
-            ),
-          ),
-          const Spacer(),
-          // Аватар пользователя с оранжевой рамкой
-          GestureDetector(
-            onTap: onAvatarTap,
-            child: Container(
-              decoration: BoxDecoration(
-                shape: BoxShape.circle,
-                border: Border.all(color: AppColors.primary, width: 2),
-              ),
-              padding: const EdgeInsets.all(2),
-              child: ProfileAvatar(avatarPath: avatarPath, radius: 16),
             ),
           ),
         ],
@@ -996,7 +1038,7 @@ class _SimpleContactPickerState extends State<_SimpleContactPicker> {
               padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
               child: Text(letter, style: TextStyle(
                 fontSize: 13, fontWeight: FontWeight.w700,
-                color: AppColors.primary, letterSpacing: 0.5)),
+                color: Theme.of(context).colorScheme.primary, letterSpacing: 0.5)),
             ),
             ...contacts.map((c) {
               final color = _colorFor(c.name);
@@ -1037,10 +1079,10 @@ class _SimpleContactPickerState extends State<_SimpleContactPicker> {
                         Container(
                           padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
                           decoration: BoxDecoration(
-                            color: AppColors.primary.withValues(alpha: 0.12),
+                            color: Theme.of(context).colorScheme.primary.withValues(alpha: 0.12),
                             borderRadius: BorderRadius.circular(10)),
-                          child: const Text('Открыть', style: TextStyle(
-                            fontSize: 12, color: AppColors.primary,
+                          child: Text('Открыть', style: TextStyle(
+                            fontSize: 12, color: Theme.of(context).colorScheme.primary,
                             fontWeight: FontWeight.w600)),
                         ),
                     ]),
@@ -1154,33 +1196,12 @@ class _DesktopCreateChatDialogState
               ),
             ),
             const SizedBox(height: 16),
-            const Align(
-              alignment: Alignment.centerLeft,
-              child: Text('Добавить участников',
-                  style:
-                      TextStyle(fontWeight: FontWeight.w600, fontSize: 13)),
-            ),
-            const SizedBox(height: 8),
-            ConstrainedBox(
-              constraints: const BoxConstraints(maxHeight: 200),
-              child: ListView(
-                shrinkWrap: true,
-                children: widget.contacts.map((c) {
-                  final sel = _selected.contains(c.name);
-                  return CheckboxListTile(
-                    value: sel,
-                    title: Text(c.name),
-                    activeColor: AppColors.primary,
-                    dense: true,
-                    contentPadding: EdgeInsets.zero,
-                    onChanged: (v) => setState(() {
-                      v == true
-                          ? _selected.add(c.name)
-                          : _selected.remove(c.name);
-                    }),
-                  );
-                }).toList(),
-              ),
+            MemberPickerSection(
+              contacts: widget.contacts,
+              selected: _selected,
+              onToggle: (login, sel) => setState(() {
+                sel ? _selected.add(login) : _selected.remove(login);
+              }),
             ),
           ],
         ),
@@ -1192,7 +1213,7 @@ class _DesktopCreateChatDialogState
         FilledButton(
           onPressed: _submit,
           style:
-              FilledButton.styleFrom(backgroundColor: AppColors.primary),
+              FilledButton.styleFrom(backgroundColor: Theme.of(context).colorScheme.primary),
           child: const Text('Создать'),
         ),
       ],

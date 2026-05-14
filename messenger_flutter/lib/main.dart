@@ -1,7 +1,11 @@
+import 'dart:async' show unawaited;
 import 'dart:convert';
-import 'dart:io' show Platform;
+import 'dart:io' show Platform, File, Directory;
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart' show rootBundle;
+import 'package:path_provider/path_provider.dart';
+import 'package:window_manager/window_manager.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:media_kit/media_kit.dart';
@@ -19,11 +23,11 @@ import 'services/notification_router.dart';
 import 'services/volume_service.dart';
 import 'responsive_shell.dart';
 import 'auth_screen.dart';
+import 'splash_screen.dart';
 
-/// Global navigator key — required for notification-triggered navigation.
 final GlobalKey<NavigatorState> navigatorKey = GlobalKey<NavigatorState>();
 
-/// Top-level FCM background handler — выполняется в отдельном Dart-изоляте.
+/// Top-level FCM background handler — выполняется в отдельном Dart.
 /// Вызывается когда приложение свёрнуто или закрыто, и FCM-сообщение
 /// является data-only (без notification-блока).
 ///
@@ -113,11 +117,33 @@ Future<void> _bgShowCallNotification(Map<String, dynamic> data) async {
   );
 }
 
+/// Загружает assets/images/logo.png и устанавливает его как иконку окна.
+/// Копирует файл во временную директорию (window_manager требует путь к файлу).
+/// Вызывается только на desktop-платформах; ошибки игнорируются.
+Future<void> _applyWindowIcon() async {
+  try {
+    final bytes = await rootBundle.load('assets/images/logo.png');
+    final dir   = await getTemporaryDirectory();
+    final file  = File('${dir.path}/app_logo.png');
+    await file.writeAsBytes(bytes.buffer.asUint8List(), flush: true);
+    await windowManager.setIcon(file.path);
+  } catch (_) {
+    // Файл не добавлен или платформа не поддерживает — тихо пропускаем.
+  }
+}
+
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   MediaKit.ensureInitialized();
 
-  // Register media_kit as just_audio backend on platforms without native support.
+  // ── Иконка окна (Windows/macOS/Linux) ─────────────────────────────────────
+  // Если в assets/images/logo.png добавлен файл — он используется как иконка
+  // окна в заголовке и на панели задач. Синхронизирован с логотипом в сайдбаре.
+  if (!kIsWeb && (Platform.isWindows || Platform.isMacOS || Platform.isLinux)) {
+    await windowManager.ensureInitialized();
+    unawaited(_applyWindowIcon());
+  }
+
   if (!kIsWeb && (Platform.isWindows || Platform.isLinux)) {
     JustAudioMediaKit.ensureInitialized(
       windows: Platform.isWindows,
@@ -127,7 +153,6 @@ void main() async {
 
   await VolumeService.instance.init();
 
-  // Audio session — mobile / macOS only (Windows/Linux may hang).
   if (!kIsWeb && (Platform.isAndroid || Platform.isIOS || Platform.isMacOS)) {
     try {
       final session = await AudioSession.instance;
@@ -135,7 +160,6 @@ void main() async {
     } catch (_) {}
   }
 
-  // Firebase is optional — app runs without google-services.json.
   bool firebaseReady = false;
   try {
     await Firebase.initializeApp();
@@ -148,15 +172,12 @@ void main() async {
   final ChatService chatService   = ApiChatService(auth);
   final signalingService          = SignalingService(auth);
 
-  // ── Notification service & router ──────────────────────────────────────────
-  // Router is created here so it can be passed down. init() is called inside
-  // _AppRootState.initState after the widget tree (and navigator) is ready.
+ // Сервис уведомлений
   final notifRouter = NotificationRouter(
     navigatorKey:      navigatorKey,
     signalingService:  signalingService,
     auth:              auth,
     firebaseReady:     firebaseReady,
-    // onOpenChat is wired by ResponsiveShell via a callback; see _AppRootState
   );
 
   runApp(ThemeProvider(
@@ -195,8 +216,15 @@ class MyApp extends StatelessWidget {
       debugShowCheckedModeBanner: false,
       navigatorKey: navigatorKey,
       themeMode: ThemeProvider.of(context).themeMode,
-      theme: AppTheme.light,
-      darkTheme: AppTheme.dark,
+      theme:      ThemeProvider.of(context).lightTheme(ThemeProvider.of(context).primaryColor),
+      darkTheme:  ThemeProvider.of(context).darkTheme(ThemeProvider.of(context).primaryColor),
+      locale: ThemeProvider.of(context).locale,
+      builder: (ctx, child) => MediaQuery(
+        data: MediaQuery.of(ctx).copyWith(
+          textScaler: TextScaler.linear(ThemeProvider.of(context).textScale),
+        ),
+        child: child!,
+      ),
       localizationsDelegates: const [
         GlobalMaterialLocalizations.delegate,
         GlobalWidgetsLocalizations.delegate,
@@ -240,11 +268,20 @@ class _AppRoot extends StatefulWidget {
 }
 
 class _AppRootState extends State<_AppRoot> with WidgetsBindingObserver {
+  /// Пока [false] — отображается [SplashScreen].
+  /// Переключается в [true] через ~1.8 с, после чего показывается [AuthGate].
+  bool _splashDone = false;
+
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _initNotifications();
+
+    // Минимальное время показа сплэш-экрана
+    Future<void>.delayed(const Duration(milliseconds: 1800), () {
+      if (mounted) setState(() => _splashDone = true);
+    });
   }
 
   @override
@@ -290,7 +327,6 @@ class _AppRootState extends State<_AppRoot> with WidgetsBindingObserver {
     if (widget.firebaseReady) await _setupFcm();
 
     // ── 3. Wire router (cold-start & background taps) ─────────────────────────
-    // Runs after a short delay so the navigator is fully mounted.
     await Future<void>.delayed(const Duration(milliseconds: 300));
     try {
       await widget.notifRouter.init();
@@ -304,9 +340,6 @@ class _AppRootState extends State<_AppRoot> with WidgetsBindingObserver {
 
     // Request permission (iOS/macOS/Android 13+)
     await messaging.requestPermission(alert: true, sound: true, badge: true);
-
-    // Disable FCM auto-display of foreground notifications on iOS —
-    // we show them via flutter_local_notifications instead.
     await messaging.setForegroundNotificationPresentationOptions(
       alert: false,
       badge: false,
@@ -321,6 +354,8 @@ class _AppRootState extends State<_AppRoot> with WidgetsBindingObserver {
 
   @override
   Widget build(BuildContext context) {
+    if (!_splashDone) return const SplashScreen();
+
     return AuthGate(
       auth: widget.auth,
       homeScreen: ResponsiveShell(

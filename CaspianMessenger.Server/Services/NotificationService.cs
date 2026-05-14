@@ -10,7 +10,8 @@ namespace CaspianMessenger.Server.Services;
 public class NotificationService(
     IHubContext<ChatHub> hubContext,
     FcmService fcmService,
-    AppDbContext db)
+    AppDbContext db,
+    EncryptionService encryption)
 {
     // ── SignalR + FCM: новое сообщение ────────────────────────────────────────
 
@@ -20,18 +21,24 @@ public class NotificationService(
         var chat = await db.Chats.AsNoTracking().FirstOrDefaultAsync(c => c.Id == chatId);
         var isGroup = chat?.Type is "group" or "community";
 
+        // Plaintext for FCM (push notification body is always readable)
+        var plainText = message.Text;
+
         foreach (var memberId in memberIds)
         {
-            // SignalR — всегда
+            // SignalR — шифруем текст для каждого получателя индивидуально
+            var encText    = encryption.Encrypt(memberId, plainText);
+            var encMessage = message.WithEncryptedText(encText);
+
             await hubContext.Clients.Group(memberId.ToString())
                 .SendAsync("ReceiveEvent", new
                 {
                     type = "message_received",
                     chatId,
-                    message
+                    message = encMessage
                 });
 
-            // FCM — только не автору (он уже видит в UI)
+            // FCM — только не автору; использует plaintext (пуш не шифруется)
             if (memberId == message.SenderId) continue;
 
             await fcmService.SendAsync(memberId.ToString(),
@@ -39,7 +46,7 @@ public class NotificationService(
                     chatId:     chatId.ToString(),
                     senderId:   message.SenderId.ToString(),
                     senderName: message.SenderName,
-                    text:       string.IsNullOrWhiteSpace(message.Text) ? "[вложение]" : message.Text,
+                    text:       string.IsNullOrWhiteSpace(plainText) ? "[вложение]" : plainText,
                     avatarUrl:  message.SenderAvatarPath ?? "",
                     isGroup:    isGroup));
         }
@@ -50,8 +57,11 @@ public class NotificationService(
     public async Task NotifyMessageEdited(List<Guid> memberIds, Guid chatId, Guid messageId, string newText)
     {
         foreach (var memberId in memberIds)
+        {
+            var encText = encryption.Encrypt(memberId, newText);
             await hubContext.Clients.Group(memberId.ToString())
-                .SendAsync("ReceiveEvent", new { type = "message_edited", chatId, messageId, newText });
+                .SendAsync("ReceiveEvent", new { type = "message_edited", chatId, messageId, newText = encText });
+        }
     }
 
     public async Task NotifyMessagesDeleted(List<Guid> memberIds, Guid chatId, List<Guid> messageIds)
@@ -91,8 +101,11 @@ public class NotificationService(
 
     public async Task SendMentionEventAsync(Guid userId, Guid chatId, MessageDto message)
     {
+        var encText    = encryption.Encrypt(userId, message.Text);
+        var encMessage = message.WithEncryptedText(encText);
+
         await hubContext.Clients.Group(userId.ToString())
-            .SendAsync("ReceiveEvent", new { type = "message_mention", chatId, message });
+            .SendAsync("ReceiveEvent", new { type = "message_mention", chatId, message = encMessage });
     }
 
     public async Task SendRawEventAsync(Guid userId, object eventData)

@@ -145,12 +145,14 @@ public class AdminController(
 
     // ── 3. PEOPLE ─────────────────────────────────────────────────────────────
 
-    /// GET /api/admin/people?search=&role=
+    /// GET /api/admin/people?search=&role=&group=&hasUser=
     [HttpGet("people")]
     [Authorize(Policy = "AdminOnly")]
     public async Task<IActionResult> GetPeople(
         [FromQuery] string? search,
-        [FromQuery] string? role)
+        [FromQuery] string? role,
+        [FromQuery] string? group,
+        [FromQuery] bool?   hasUser)
     {
         var query = db.People.AsQueryable();
 
@@ -165,6 +167,12 @@ public class AdminController(
 
         if (!string.IsNullOrWhiteSpace(role) && role != "all")
             query = query.Where(p => p.Role == role);
+
+        if (!string.IsNullOrWhiteSpace(group))
+            query = query.Where(p => p.Group == group);
+
+        if (hasUser.HasValue)
+            query = query.Where(p => hasUser.Value ? p.UserId != null : p.UserId == null);
 
         var people = await query
             .OrderBy(p => p.LastName).ThenBy(p => p.FirstName)

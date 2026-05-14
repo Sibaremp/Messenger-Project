@@ -12,11 +12,18 @@ class PeopleRepository {
 
   PeopleRepository({required ApiClient apiClient}) : _apiClient = apiClient;
 
-  Future<List<Person>> fetchPeople({String? search, String? role}) async {
+  Future<List<Person>> fetchPeople({
+    String? search,
+    String? role,
+    String? group,
+    bool? hasUser,
+  }) async {
     try {
       final params = <String, dynamic>{};
       if (search != null && search.isNotEmpty) params['search'] = search;
       if (role != null && role != 'all') params['role'] = role;
+      if (group != null) params['group'] = group;
+      if (hasUser != null) params['hasUser'] = hasUser;
 
       final response = await _apiClient.get<List<dynamic>>(
         '/api/admin/people',

@@ -148,6 +148,28 @@ public class AuthController(
         return NoContent();
     }
 
+    // ── Смена логина ──────────────────────────────────────────────────────────
+
+    [HttpPut("login")]
+    [Authorize]
+    public async Task<IActionResult> ChangeLogin([FromBody] ChangeLoginRequest req)
+    {
+        var userId = GetUserId();
+        var user = await db.Users.FindAsync(userId);
+        if (user == null) return NotFound();
+
+        if (!PasswordHelper.Verify(req.Password, user.PasswordHash))
+            return BadRequest(new { message = "Неверный пароль" });
+
+        if (await db.Users.AnyAsync(u => u.Name == req.NewLogin && u.Id != userId))
+            return Conflict(new { message = "Этот логин уже занят" });
+
+        user.Name = req.NewLogin;
+        await db.SaveChangesAsync();
+
+        return Ok(new { login = user.Name });
+    }
+
     // ── Helpers ───────────────────────────────────────────────────────────────
 
     private Guid GetUserId() =>
@@ -156,4 +178,10 @@ public class AuthController(
 
     private string? GetToken() =>
         Request.Headers.Authorization.ToString().Replace("Bearer ", "").NullIfEmpty();
+}
+
+public class ChangeLoginRequest
+{
+    public string NewLogin { get; set; } = string.Empty;
+    public string Password { get; set; } = string.Empty;
 }

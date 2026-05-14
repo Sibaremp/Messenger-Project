@@ -104,6 +104,30 @@ public class AdminSubjectsController(
 
     // ── TEACHER ASSIGNMENTS ───────────────────────────────────────────────────
 
+    /// GET /api/admin/subjects/{id}/assignments — все назначения по предмету
+    [HttpGet("subjects/{id:int}/assignments")]
+    public async Task<IActionResult> GetSubjectAssignments(int id)
+    {
+        if (!await db.Subjects.AnyAsync(s => s.Id == id))
+            return NotFound(new { message = "Предмет не найден" });
+
+        var assignments = await db.TeacherSubjectGroups
+            .Where(t => t.SubjectId == id)
+            .Include(t => t.Person)
+            .OrderBy(t => t.Person.LastName).ThenBy(t => t.GroupName)
+            .Select(t => new
+            {
+                id          = t.Id,
+                personId    = t.PersonId,
+                teacherName = t.Person.LastName + " " + t.Person.FirstName +
+                              (t.Person.MiddleName != null ? " " + t.Person.MiddleName : ""),
+                groupName   = t.GroupName
+            })
+            .ToListAsync();
+
+        return Ok(assignments);
+    }
+
     /// GET /api/admin/people/{personId}/subjects
     [HttpGet("people/{personId:int}/subjects")]
     public async Task<IActionResult> GetTeacherSubjects(int personId)

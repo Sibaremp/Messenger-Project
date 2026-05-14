@@ -94,8 +94,6 @@ class ProfanityFilter {
 
   /// Заменяет нецензурные слова в [text]: сохраняет первую букву,
   /// заменяет остальные символами «*».
-  ///
-  /// Пример: «хуй» → «х**», «ёбаный» → «ё*****».
   static String censor(String text) {
     if (text.isEmpty) return text;
     return text.replaceAllMapped(_pattern, (m) {

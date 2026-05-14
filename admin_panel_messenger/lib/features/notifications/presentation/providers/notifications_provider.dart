@@ -64,10 +64,12 @@ class SendNotifier extends StateNotifier<SendState> {
     required String title,
     required String body,
     required String target,
+    String? imageUrl,
   }) async {
     state = state.copyWith(status: SendStatus.loading, clearError: true);
     try {
-      await _repo.send(title: title, body: body, target: target);
+      await _repo.send(
+          title: title, body: body, target: target, imageUrl: imageUrl);
       state = state.copyWith(status: SendStatus.success);
       _history.load();
     } catch (e) {

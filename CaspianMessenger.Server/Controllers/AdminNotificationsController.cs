@@ -65,11 +65,13 @@ public class AdminNotificationsController(
         // 4. Отправляем через FCM (для фоновых/отключённых клиентов)
         var data = new Dictionary<string, string>
         {
-            ["type"]  = "admin_notification",
-            ["title"] = req.Title.Trim(),
-            ["body"]  = req.Body.Trim(),
+            ["type"]   = "admin_notification",
+            ["title"]  = req.Title.Trim(),
+            ["body"]   = req.Body.Trim(),
             ["target"] = target
         };
+        if (!string.IsNullOrWhiteSpace(req.ImageUrl))
+            data["imageUrl"] = req.ImageUrl.Trim();
         await fcm.SendToMultipleAsync(tokens, data);
 
         // 5. Сохраняем в историю
@@ -141,11 +143,41 @@ public class AdminNotificationsController(
 
         return NoContent();
     }
+
+    // ── UPLOAD ATTACHMENT ─────────────────────────────────────────────────────
+
+    /// POST /api/admin/notifications/upload  (multipart/form-data, field: file)
+    [HttpPost("upload")]
+    [RequestSizeLimit(52_428_800)] // 50 MB
+    public async Task<IActionResult> UploadAttachment(IFormFile file)
+    {
+        if (file is null || file.Length == 0)
+            return BadRequest(new { message = "Файл не передан" });
+
+        var allowedTypes = new[] { "image/", "video/", "image/gif" };
+        if (!allowedTypes.Any(t => file.ContentType.StartsWith(t)))
+            return BadRequest(new { message = "Разрешены только изображения и видео" });
+
+        var ext = Path.GetExtension(file.FileName).ToLowerInvariant();
+        var fileName = $"{Guid.NewGuid()}{ext}";
+        var folder = Path.Combine("wwwroot", "uploads", "notifications");
+        Directory.CreateDirectory(folder);
+        var filePath = Path.Combine(folder, fileName);
+
+        await using var stream = System.IO.File.Create(filePath);
+        await file.CopyToAsync(stream);
+
+        var baseUrl = $"{Request.Scheme}://{Request.Host}";
+        var url = $"{baseUrl}/uploads/notifications/{fileName}";
+
+        return Ok(new { url, fileName = file.FileName, fileSize = file.Length, contentType = file.ContentType });
+    }
 }
 
 public class SendNotificationRequest
 {
-    public string? Title  { get; set; }
-    public string? Body   { get; set; }
-    public string? Target { get; set; }
+    public string? Title    { get; set; }
+    public string? Body     { get; set; }
+    public string? Target   { get; set; }
+    public string? ImageUrl { get; set; }
 }

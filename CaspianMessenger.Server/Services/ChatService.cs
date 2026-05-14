@@ -35,7 +35,10 @@ public class ChatService(AppDbContext db)
             .Select(g => new { ChatId = g.Key, Count = g.Count() })
             .ToDictionaryAsync(x => x.ChatId, x => x.Count);
 
-        return chats.Select(c => MapChatToDto(c, userId, unreadCounts.GetValueOrDefault(c.Id))).ToList();
+        var allMemberIds = chats.SelectMany(c => c.Members.Select(m => m.UserId)).Distinct().ToList();
+        var persons = await FetchPersonsAsync(allMemberIds);
+
+        return chats.Select(c => MapChatToDto(c, userId, unreadCounts.GetValueOrDefault(c.Id), persons)).ToList();
     }
 
     public async Task<ChatDto?> GetChatAsync(Guid chatId, Guid userId, int offset = 0, int limit = 50)
@@ -49,6 +52,9 @@ public class ChatService(AppDbContext db)
             .FirstOrDefaultAsync();
 
         if (chat == null) return null;
+
+        var memberIds = chat.Members.Select(m => m.UserId).ToList();
+        var persons = await FetchPersonsAsync(memberIds);
 
         var messages = await db.Messages
             .Where(m => m.ChatId == chatId)
@@ -68,7 +74,7 @@ public class ChatService(AppDbContext db)
         messages.Reverse();
         chat.Messages = messages;
 
-        return MapChatToDto(chat, userId);
+        return MapChatToDto(chat, userId, persons: persons);
     }
 
     public async Task<(ChatDto? Chat, string? Error)> CreateDirectChatAsync(Guid currentUserId, CreateDirectChatRequest req)
@@ -188,6 +194,21 @@ public class ChatService(AppDbContext db)
         return (await GetChatAsync(chatId, requesterId), null);
     }
 
+    /// <summary>Текущий пользователь вступает в группу по приглашению (self-join).</summary>
+    public async Task<(ChatDto? Chat, string? Error)> JoinChatAsync(Guid chatId, Guid userId)
+    {
+        var chat = await db.Chats.FindAsync(chatId);
+        if (chat == null) return (null, "Chat not found");
+        if (chat.Type == "direct") return (null, "Cannot join a direct chat");
+
+        var existing = await db.ChatMembers.AnyAsync(cm => cm.ChatId == chatId && cm.UserId == userId);
+        if (existing) return (null, "Already a member");
+
+        db.ChatMembers.Add(new ChatMember { ChatId = chatId, UserId = userId, Role = "member" });
+        await db.SaveChangesAsync();
+        return (await GetChatAsync(chatId, userId), null);
+    }
+
     public async Task<(ChatDto? Chat, string? Error)> UpdateMemberRoleAsync(Guid chatId, Guid requesterId, Guid targetUserId, string newRole)
     {
         var requester = await db.ChatMembers.FirstOrDefaultAsync(cm => cm.ChatId == chatId && cm.UserId == requesterId);
@@ -230,7 +251,10 @@ public class ChatService(AppDbContext db)
             .Include(c => c.Messages.OrderByDescending(m => m.CreatedAt).Take(5)).ThenInclude(m => m.Sender)
             .ToListAsync();
 
-        return chats.Select(c => MapChatToDto(c, userId)).ToList();
+        var searchMemberIds = chats.SelectMany(c => c.Members.Select(m => m.UserId)).Distinct().ToList();
+        var searchPersons = await FetchPersonsAsync(searchMemberIds);
+
+        return chats.Select(c => MapChatToDto(c, userId, persons: searchPersons)).ToList();
     }
 
     public async Task<List<Guid>> GetChatMemberIdsAsync(Guid chatId)
@@ -241,7 +265,8 @@ public class ChatService(AppDbContext db)
             .ToListAsync();
     }
 
-    public static ChatDto MapChatToDto(Chat chat, Guid? requestingUserId = null, int unreadCount = 0)
+    public static ChatDto MapChatToDto(Chat chat, Guid? requestingUserId = null, int unreadCount = 0,
+        Dictionary<Guid, Person>? persons = null)
     {
         // Для личных чатов отдаём имя и аватар "собеседника" относительно
         // запрашивающего пользователя, а не того, кто создавал чат.
@@ -277,24 +302,50 @@ public class ChatService(AppDbContext db)
             {
                 UserId = m.UserId,
                 Name = m.User?.Name ?? "",
+                DisplayName = persons != null && persons.TryGetValue(m.UserId, out var p)
+                    ? string.Join(" ", new[] { p.LastName, p.FirstName, p.MiddleName }
+                        .Where(s => !string.IsNullOrWhiteSpace(s)))
+                    : null,
                 Group = m.User?.Group,
                 AvatarPath = m.User?.AvatarPath,
                 Role = m.Role,
                 IsOnline = m.User?.IsOnline ?? false
             }).ToList(),
             PinnedMessageIds = chat.PinnedMessageIds,
-            Messages = chat.Messages.Select(m => MapMessageToDto(m, requestingUserId ?? default)).ToList()
+            Messages = chat.Messages.Select(m => MapMessageToDto(m, requestingUserId ?? default, persons)).ToList()
         };
     }
 
-    public static MessageDto MapMessageToDto(Message msg, Guid currentUserId = default) => new()
+    private async Task<Dictionary<Guid, Person>> FetchPersonsAsync(List<Guid> userIds)
+    {
+        if (userIds.Count == 0) return [];
+        return await db.People
+            .Where(p => p.UserId != null && userIds.Contains(p.UserId!.Value))
+            .ToDictionaryAsync(p => p.UserId!.Value);
+    }
+
+    /// <summary>Форматирует ФИО в краткую форму «Фамилия И.О.» для подписей сообщений.</summary>
+    public static string FormatShortName(Person p)
+    {
+        var parts = new List<string>();
+        if (!string.IsNullOrWhiteSpace(p.LastName))  parts.Add(p.LastName);
+        if (!string.IsNullOrWhiteSpace(p.FirstName)) parts.Add(p.FirstName[0] + ".");
+        if (!string.IsNullOrWhiteSpace(p.MiddleName)) parts.Add(p.MiddleName[0] + ".");
+        return string.Join(" ", parts);
+    }
+
+    public static MessageDto MapMessageToDto(Message msg, Guid currentUserId = default,
+        Dictionary<Guid, Person>? persons = null) => new()
     {
         Id = msg.Id,
         ChatId = msg.ChatId,
         SenderId = msg.SenderId,
         SenderName = msg.Sender?.Name ?? "",
+        SenderDisplayName = msg.Sender != null && persons != null && persons.TryGetValue(msg.Sender.Id, out var sp)
+            ? FormatShortName(sp) : null,
         SenderGroup = msg.Sender?.Group,
         SenderAvatarPath = msg.Sender?.AvatarPath,
+        PostAsCommunity = msg.PostAsCommunity,
         Text = msg.Text,
         ReplyToId = msg.ReplyToId,
         ReplyTo = msg.ReplyTo != null ? new ReplyDto
@@ -336,6 +387,8 @@ public class ChatService(AppDbContext db)
             MessageId = c.MessageId,
             SenderId = c.SenderId,
             SenderName = c.Sender?.Name ?? "",
+            SenderDisplayName = c.Sender != null && persons != null && persons.TryGetValue(c.Sender.Id, out var cp)
+                ? FormatShortName(cp) : null,
             SenderGroup = c.Sender?.Group,
             SenderAvatarPath = c.Sender?.AvatarPath,
             Text = c.Text,
@@ -350,7 +403,9 @@ public class ChatService(AppDbContext db)
                 FileName = a.FileName,
                 FileSize = a.FileSize,
                 Type = a.Type,
-                MimeType = a.MimeType
+                MimeType = a.MimeType,
+                ThumbnailPath = a.ThumbnailPath,
+                DurationMs = a.DurationMs
             }).FirstOrDefault(),
             Attachments = c.Attachments.Select(a => new AttachmentDto
             {
@@ -359,7 +414,9 @@ public class ChatService(AppDbContext db)
                 FileName = a.FileName,
                 FileSize = a.FileSize,
                 Type = a.Type,
-                MimeType = a.MimeType
+                MimeType = a.MimeType,
+                ThumbnailPath = a.ThumbnailPath,
+                DurationMs = a.DurationMs
             }).ToList()
         }).ToList(),
         Mentions = msg.Mentions.Select(m => new MentionDto

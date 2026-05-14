@@ -18,10 +18,50 @@ class SubjectsScreen extends ConsumerStatefulWidget {
 class _SubjectsScreenState extends ConsumerState<SubjectsScreen> {
   final _addCtrl = TextEditingController();
 
+  // Inline expansion state
+  final Set<int> _expanded = {};
+  final Map<int, List<SubjectAssignment>> _cache = {};
+  final Map<int, bool> _loadingMap = {};
+  final Map<int, String?> _errorMap = {};
+
   @override
   void dispose() {
     _addCtrl.dispose();
     super.dispose();
+  }
+
+  Future<void> _loadAssignments(int subjectId) async {
+    if (_cache.containsKey(subjectId)) return;
+    setState(() => _loadingMap[subjectId] = true);
+    try {
+      final assignments = await ref
+          .read(subjectsRepositoryProvider)
+          .fetchSubjectAssignments(subjectId);
+      if (mounted) {
+        setState(() {
+          _cache[subjectId] = assignments;
+          _loadingMap.remove(subjectId);
+        });
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _errorMap[subjectId] = e.toString();
+          _loadingMap.remove(subjectId);
+        });
+      }
+    }
+  }
+
+  void _toggle(int subjectId) {
+    setState(() {
+      if (_expanded.contains(subjectId)) {
+        _expanded.remove(subjectId);
+      } else {
+        _expanded.add(subjectId);
+        _loadAssignments(subjectId);
+      }
+    });
   }
 
   @override
@@ -34,7 +74,7 @@ class _SubjectsScreenState extends ConsumerState<SubjectsScreen> {
         _buildToolbar(),
         Expanded(
           child: asyncSubjects.when(
-            data: (list) => _buildContent(context, list),
+            data: (list) => _buildContent(list),
             loading: () => const Center(child: CircularProgressIndicator()),
             error: (e, _) => _buildError(e.toString()),
           ),
@@ -47,31 +87,28 @@ class _SubjectsScreenState extends ConsumerState<SubjectsScreen> {
     return Container(
       color: Colors.white,
       padding: const EdgeInsets.fromLTRB(28, 24, 28, 20),
-      child: Row(
-        children: [
-          const Text('Предметы',
-              style: TextStyle(
-                  fontSize: 22,
-                  fontWeight: FontWeight.w700,
-                  color: Color(0xFF111827))),
-          const Spacer(),
-          OutlinedButton.icon(
-            onPressed: () =>
-                ref.read(subjectsProvider.notifier).load(),
-            icon: const Icon(Icons.refresh_rounded, size: 16),
-            label: const Text('Обновить', style: TextStyle(fontSize: 13)),
-            style: OutlinedButton.styleFrom(
-              padding:
-                  const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-              side: BorderSide(color: Colors.grey.shade300),
-            ),
+      child: Row(children: [
+        const Text('Предметы',
+            style: TextStyle(
+                fontSize: 22,
+                fontWeight: FontWeight.w700,
+                color: Color(0xFF111827))),
+        const Spacer(),
+        OutlinedButton.icon(
+          onPressed: () => ref.read(subjectsProvider.notifier).load(),
+          icon: const Icon(Icons.refresh_rounded, size: 16),
+          label: const Text('Обновить', style: TextStyle(fontSize: 13)),
+          style: OutlinedButton.styleFrom(
+            padding:
+                const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+            side: BorderSide(color: Colors.grey.shade300),
           ),
-        ],
-      ),
+        ),
+      ]),
     );
   }
 
-  Widget _buildContent(BuildContext context, List<Subject> subjects) {
+  Widget _buildContent(List<Subject> subjects) {
     return SingleChildScrollView(
       padding: const EdgeInsets.all(28),
       child: Column(
@@ -94,33 +131,26 @@ class _SubjectsScreenState extends ConsumerState<SubjectsScreen> {
               ),
             )
           else
-            Card(
+            Container(
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: Colors.grey.shade200),
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withValues(alpha: 0.04),
+                    blurRadius: 8,
+                    offset: const Offset(0, 2),
+                  ),
+                ],
+              ),
               child: ClipRRect(
                 borderRadius: BorderRadius.circular(12),
-                child: SizedBox(
-                  width: double.infinity,
-                  child: DataTable(
-                    columnSpacing: 16,
-                    horizontalMargin: 24,
-                    headingRowHeight: 44,
-                    dataRowMinHeight: 52,
-                    dataRowMaxHeight: 52,
-                    headingRowColor:
-                        WidgetStateProperty.all(const Color(0xFFF8FAFC)),
-                    dividerThickness: 1,
-                    columns: const [
-                      DataColumn(
-                          label: _ColHeader('Название')),
-                      DataColumn(
-                          label: _ColHeader('Назначений'),
-                          numeric: true),
-                      DataColumn(
-                          label: _ColHeader('Действия')),
-                    ],
-                    rows: subjects
-                        .map((s) => _buildRow(context, s))
-                        .toList(),
-                  ),
+                child: Column(
+                  children: [
+                    _buildTableHeader(),
+                    ...subjects.map((s) => _buildSubjectRow(s)),
+                  ],
                 ),
               ),
             ),
@@ -129,62 +159,317 @@ class _SubjectsScreenState extends ConsumerState<SubjectsScreen> {
     );
   }
 
-  DataRow _buildRow(BuildContext context, Subject subject) {
-    return DataRow(cells: [
-      DataCell(Text(subject.name,
-          style: const TextStyle(
-              fontSize: 14,
-              fontWeight: FontWeight.w500,
-              color: Color(0xFF111827)))),
-      DataCell(
-        Container(
-          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
-          decoration: BoxDecoration(
-            color: const Color(0xFFF0F4FF),
-            borderRadius: BorderRadius.circular(12),
-          ),
-          child: Text('${subject.assignmentCount}',
-              style: const TextStyle(
+  Widget _buildTableHeader() {
+    return Container(
+      color: const Color(0xFFF8FAFC),
+      padding:
+          const EdgeInsets.symmetric(horizontal: 24, vertical: 11),
+      child: Row(children: [
+        const Expanded(
+          child: Text('Название',
+              style: TextStyle(
                   fontSize: 13,
                   fontWeight: FontWeight.w600,
-                  color: Color(0xFF1E3A5F))),
+                  color: Color(0xFF374151))),
+        ),
+        SizedBox(
+          width: 120,
+          child: Text('Назначений',
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                  fontSize: 13,
+                  fontWeight: FontWeight.w600,
+                  color: Colors.grey.shade600)),
+        ),
+        const SizedBox(width: 160),
+      ]),
+    );
+  }
+
+  Widget _buildSubjectRow(Subject subject) {
+    final isExpanded = _expanded.contains(subject.id);
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Container(
+          decoration: BoxDecoration(
+            border:
+                Border(top: BorderSide(color: Colors.grey.shade100)),
+          ),
+          child: InkWell(
+            onTap: () => _toggle(subject.id),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(
+                  horizontal: 24, vertical: 12),
+              child: Row(children: [
+                // Название
+                Expanded(
+                  child: Row(children: [
+                    Container(
+                      width: 34,
+                      height: 34,
+                      decoration: BoxDecoration(
+                        color: const Color(0xFFFFFBEB),
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: const Icon(Icons.menu_book_rounded,
+                          size: 17, color: Color(0xFFD97706)),
+                    ),
+                    const SizedBox(width: 12),
+                    Text(subject.name,
+                        style: const TextStyle(
+                            fontSize: 14,
+                            fontWeight: FontWeight.w500,
+                            color: Color(0xFF111827))),
+                  ]),
+                ),
+                // Назначений
+                SizedBox(
+                  width: 120,
+                  child: Center(
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 10, vertical: 3),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFFF0F4FF),
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      child: Text('${subject.assignmentCount}',
+                          style: const TextStyle(
+                              fontSize: 13,
+                              fontWeight: FontWeight.w600,
+                              color: Color(0xFF1E3A5F))),
+                    ),
+                  ),
+                ),
+                // Действия
+                SizedBox(
+                  width: 160,
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.end,
+                    children: [
+                      AnimatedRotation(
+                        turns: isExpanded ? 0.5 : 0,
+                        duration: const Duration(milliseconds: 200),
+                        child: IconButton(
+                          tooltip: isExpanded
+                              ? 'Свернуть'
+                              : 'Показать преподавателей',
+                          icon: const Icon(
+                              Icons.keyboard_arrow_down_rounded,
+                              size: 22),
+                          color: const Color(0xFF1D4ED8),
+                          onPressed: () => _toggle(subject.id),
+                          padding: EdgeInsets.zero,
+                          constraints: const BoxConstraints(
+                              minWidth: 32, minHeight: 32),
+                        ),
+                      ),
+                      IconButton(
+                        tooltip: 'Назначить преподавателя',
+                        icon: const Icon(Icons.person_add_outlined,
+                            size: 18),
+                        color: const Color(0xFF059669),
+                        onPressed: () =>
+                            _showAssignTeacherDialog(context, subject),
+                        padding: EdgeInsets.zero,
+                        constraints: const BoxConstraints(
+                            minWidth: 32, minHeight: 32),
+                      ),
+                      IconButton(
+                        tooltip: 'Переименовать',
+                        icon: const Icon(Icons.edit_outlined, size: 18),
+                        color: const Color(0xFF1E3A5F),
+                        onPressed: () =>
+                            _showRenameDialog(context, subject),
+                        padding: EdgeInsets.zero,
+                        constraints: const BoxConstraints(
+                            minWidth: 32, minHeight: 32),
+                      ),
+                      IconButton(
+                        tooltip: 'Удалить',
+                        icon: const Icon(Icons.delete_outline_rounded,
+                            size: 18),
+                        color: const Color(0xFFDC2626),
+                        onPressed: () =>
+                            _showDeleteDialog(context, subject),
+                        padding: EdgeInsets.zero,
+                        constraints: const BoxConstraints(
+                            minWidth: 32, minHeight: 32),
+                      ),
+                    ],
+                  ),
+                ),
+              ]),
+            ),
+          ),
+        ),
+        // Inline expanded content
+        AnimatedSize(
+          duration: const Duration(milliseconds: 250),
+          curve: Curves.easeInOut,
+          child: isExpanded
+              ? _buildExpandedContent(subject)
+              : const SizedBox.shrink(),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildExpandedContent(Subject subject) {
+    final isLoading = _loadingMap[subject.id] == true;
+    final error = _errorMap[subject.id];
+    final assignments = _cache[subject.id];
+
+    Widget body;
+
+    if (isLoading) {
+      body = const Padding(
+        padding: EdgeInsets.symmetric(vertical: 20),
+        child: Center(child: CircularProgressIndicator()),
+      );
+    } else if (error != null) {
+      body = Padding(
+        padding: const EdgeInsets.all(16),
+        child: Row(children: [
+          const Icon(Icons.error_outline, color: Colors.red, size: 18),
+          const SizedBox(width: 8),
+          Expanded(
+              child: Text(error,
+                  style: const TextStyle(
+                      color: Colors.red, fontSize: 13))),
+          TextButton(
+              onPressed: () {
+                _errorMap.remove(subject.id);
+                _loadAssignments(subject.id);
+              },
+              child: const Text('Повторить')),
+        ]),
+      );
+    } else if (assignments == null || assignments.isEmpty) {
+      body = Padding(
+        padding: const EdgeInsets.symmetric(vertical: 16, horizontal: 24),
+        child: Text('Преподаватели не назначены',
+            style: TextStyle(fontSize: 13, color: Colors.grey.shade500)),
+      );
+    } else {
+      // Группируем по преподавателю
+      final byTeacher = <String, List<String>>{};
+      for (final a in assignments) {
+        (byTeacher[a.teacherName] ??= []).add(a.groupName);
+      }
+      final teachers = byTeacher.keys.toList()..sort();
+
+      body = Padding(
+        padding: const EdgeInsets.fromLTRB(24, 4, 24, 12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: teachers.map((teacherName) {
+            final groups = byTeacher[teacherName]!..sort();
+            return Padding(
+              padding: const EdgeInsets.only(bottom: 8),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  // Teacher avatar + name
+                  CircleAvatar(
+                    radius: 15,
+                    backgroundColor:
+                        const Color(0xFF1E3A5F).withValues(alpha: 0.1),
+                    child: Text(
+                      teacherName.isNotEmpty
+                          ? teacherName[0].toUpperCase()
+                          : '?',
+                      style: const TextStyle(
+                          fontSize: 11,
+                          fontWeight: FontWeight.w700,
+                          color: Color(0xFF1E3A5F)),
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(teacherName,
+                            style: const TextStyle(
+                                fontSize: 13,
+                                fontWeight: FontWeight.w600,
+                                color: Color(0xFF111827))),
+                        const SizedBox(height: 5),
+                        Wrap(
+                          spacing: 6,
+                          runSpacing: 6,
+                          children: groups.map((g) {
+                            return Container(
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: 10, vertical: 4),
+                              decoration: BoxDecoration(
+                                color: const Color(0xFFF0FDF4),
+                                borderRadius:
+                                    BorderRadius.circular(16),
+                                border: Border.all(
+                                    color: const Color(0xFFBBF7D0)),
+                              ),
+                              child: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  const Icon(Icons.group_outlined,
+                                      size: 12,
+                                      color: Color(0xFF059669)),
+                                  const SizedBox(width: 4),
+                                  Text(g,
+                                      style: const TextStyle(
+                                          fontSize: 12,
+                                          color: Color(0xFF059669),
+                                          fontWeight:
+                                              FontWeight.w500)),
+                                ],
+                              ),
+                            );
+                          }).toList(),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            );
+          }).toList(),
+        ),
+      );
+    }
+
+    return Container(
+      decoration: BoxDecoration(
+        color: const Color(0xFFFFFDF5),
+        border: Border(
+          top: BorderSide(color: Colors.orange.shade50),
+          bottom: BorderSide(color: Colors.grey.shade100),
         ),
       ),
-      DataCell(Row(mainAxisSize: MainAxisSize.min, children: [
-        IconButton(
-          tooltip: 'Назначить преподавателя',
-          icon: const Icon(Icons.person_add_outlined, size: 18),
-          color: const Color(0xFF059669),
-          onPressed: () => _showAssignTeacherDialog(context, subject),
-        ),
-        IconButton(
-          tooltip: 'Переименовать',
-          icon: const Icon(Icons.edit_outlined, size: 18),
-          color: const Color(0xFF1E3A5F),
-          onPressed: () => _showRenameDialog(context, subject),
-        ),
-        IconButton(
-          tooltip: 'Удалить',
-          icon: const Icon(Icons.delete_outline_rounded, size: 18),
-          color: const Color(0xFFDC2626),
-          onPressed: () => _showDeleteDialog(context, subject),
-        ),
-      ])),
-    ]);
+      child: body,
+    );
   }
+
+  // ── Dialogs ─────────────────────────────────────────────────────────────────
 
   Future<void> _showAssignTeacherDialog(
       BuildContext context, Subject subject) async {
     await showDialog<void>(
       context: context,
       builder: (ctx) => Dialog(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(16)),
         child: SizedBox(
           width: 480,
           child: _AssignTeacherDialog(subject: subject),
         ),
       ),
     );
+    // Сбрасываем кэш чтобы перезагрузить назначения
+    setState(() => _cache.remove(subject.id));
     ref.read(subjectsProvider.notifier).load();
   }
 
@@ -194,8 +479,8 @@ class _SubjectsScreenState extends ConsumerState<SubjectsScreen> {
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
-        shape:
-            RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(16)),
         title: const Row(children: [
           Icon(Icons.edit_outlined, color: Color(0xFF1E3A5F)),
           SizedBox(width: 10),
@@ -250,8 +535,8 @@ class _SubjectsScreenState extends ConsumerState<SubjectsScreen> {
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
-        shape:
-            RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(16)),
         title: const Row(children: [
           Icon(Icons.warning_amber_rounded, color: Color(0xFFF59E0B)),
           SizedBox(width: 10),
@@ -291,6 +576,10 @@ class _SubjectsScreenState extends ConsumerState<SubjectsScreen> {
     );
 
     if (confirmed != true || !context.mounted) return;
+    setState(() {
+      _cache.remove(subject.id);
+      _expanded.remove(subject.id);
+    });
     final ok =
         await ref.read(subjectsProvider.notifier).delete(subject.id);
     if (!context.mounted) return;
@@ -320,7 +609,8 @@ class _SubjectsScreenState extends ConsumerState<SubjectsScreen> {
   void _showSnack(BuildContext context, String text, bool ok) {
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(
       content: Text(text),
-      backgroundColor: ok ? Colors.green.shade700 : Colors.red.shade700,
+      backgroundColor:
+          ok ? Colors.green.shade700 : Colors.red.shade700,
       behavior: SnackBarBehavior.floating,
       shape:
           RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
@@ -328,7 +618,7 @@ class _SubjectsScreenState extends ConsumerState<SubjectsScreen> {
   }
 }
 
-// ── Add card ──────────────────────────────────────────────────────────────────
+// ── Add subject card ──────────────────────────────────────────────────────────
 
 class _AddSubjectCard extends ConsumerStatefulWidget {
   final TextEditingController addCtrl;
@@ -368,50 +658,48 @@ class _AddSubjectCardState extends ConsumerState<_AddSubjectCard> {
     return Card(
       child: Padding(
         padding: const EdgeInsets.all(20),
-        child: Row(
-          children: [
-            Expanded(
-              child: TextField(
-                controller: widget.addCtrl,
-                onSubmitted: (_) => _submit(),
-                decoration: InputDecoration(
-                  labelText: 'Название нового предмета',
-                  prefixIcon:
-                      const Icon(Icons.add_circle_outline, size: 20),
-                  border: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(10)),
-                  contentPadding: const EdgeInsets.symmetric(
-                      horizontal: 14, vertical: 12),
-                ),
-                style: const TextStyle(fontSize: 14),
+        child: Row(children: [
+          Expanded(
+            child: TextField(
+              controller: widget.addCtrl,
+              onSubmitted: (_) => _submit(),
+              decoration: InputDecoration(
+                labelText: 'Название нового предмета',
+                prefixIcon:
+                    const Icon(Icons.add_circle_outline, size: 20),
+                border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(10)),
+                contentPadding: const EdgeInsets.symmetric(
+                    horizontal: 14, vertical: 12),
               ),
+              style: const TextStyle(fontSize: 14),
             ),
-            const SizedBox(width: 12),
-            SizedBox(
-              height: 48,
-              child: ElevatedButton.icon(
-                onPressed: _loading ? null : _submit,
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: const Color(0xFF1E3A5F),
-                  foregroundColor: Colors.white,
-                  shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(10)),
-                  padding: const EdgeInsets.symmetric(
-                      horizontal: 20, vertical: 0),
-                ),
-                icon: _loading
-                    ? const SizedBox(
-                        width: 16,
-                        height: 16,
-                        child: CircularProgressIndicator(
-                            strokeWidth: 2, color: Colors.white))
-                    : const Icon(Icons.add, size: 18),
-                label: const Text('Добавить',
-                    style: TextStyle(fontSize: 14)),
+          ),
+          const SizedBox(width: 12),
+          SizedBox(
+            height: 48,
+            child: ElevatedButton.icon(
+              onPressed: _loading ? null : _submit,
+              style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFF1E3A5F),
+                foregroundColor: Colors.white,
+                shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(10)),
+                padding: const EdgeInsets.symmetric(
+                    horizontal: 20, vertical: 0),
               ),
+              icon: _loading
+                  ? const SizedBox(
+                      width: 16,
+                      height: 16,
+                      child: CircularProgressIndicator(
+                          strokeWidth: 2, color: Colors.white))
+                  : const Icon(Icons.add, size: 18),
+              label:
+                  const Text('Добавить', style: TextStyle(fontSize: 14)),
             ),
-          ],
-        ),
+          ),
+        ]),
       ),
     );
   }
@@ -451,16 +739,18 @@ class _AssignTeacherDialogState
       final peopleRepo = ref.read(peopleRepositoryProvider);
       final groupsRepo = ref.read(groupsRepositoryProvider);
       final teachers = await peopleRepo.fetchPeople(role: 'teacher');
-      final groups   = await groupsRepo.fetchGroups();
+      final groups = await groupsRepo.fetchGroups();
       if (mounted) {
         setState(() {
           _teachers = teachers;
-          _groups   = groups;
-          _loading  = false;
+          _groups = groups;
+          _loading = false;
         });
       }
     } catch (e) {
-      if (mounted) setState(() { _error = e.toString(); _loading = false; });
+      if (mounted) {
+        setState(() { _error = e.toString(); _loading = false; });
+      }
     }
   }
 
@@ -479,12 +769,13 @@ class _AssignTeacherDialogState
               'Назначено: ${_selectedTeacher!.fullName} → ${widget.subject.name} (${_selectedGroup!.name})'),
           backgroundColor: Colors.green.shade700,
           behavior: SnackBarBehavior.floating,
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+          shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(8)),
         ));
         setState(() {
           _selectedTeacher = null;
-          _selectedGroup   = null;
-          _saving          = false;
+          _selectedGroup = null;
+          _saving = false;
         });
       }
     } catch (e) {
@@ -494,7 +785,8 @@ class _AssignTeacherDialogState
           content: Text(e.toString()),
           backgroundColor: Colors.red.shade700,
           behavior: SnackBarBehavior.floating,
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+          shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(8)),
         ));
       }
     }
@@ -510,7 +802,8 @@ class _AssignTeacherDialogState
           padding: const EdgeInsets.fromLTRB(24, 20, 16, 16),
           decoration: const BoxDecoration(
             color: Color(0xFF0F2440),
-            borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+            borderRadius:
+                BorderRadius.vertical(top: Radius.circular(16)),
           ),
           child: Row(children: [
             const Icon(Icons.person_add_outlined,
@@ -526,7 +819,8 @@ class _AssignTeacherDialogState
               ),
             ),
             IconButton(
-              icon: const Icon(Icons.close, color: Colors.white70, size: 20),
+              icon: const Icon(Icons.close,
+                  color: Colors.white70, size: 20),
               onPressed: () => Navigator.pop(context),
               padding: EdgeInsets.zero,
               constraints: const BoxConstraints(),
@@ -561,15 +855,18 @@ class _AssignTeacherDialogState
                               Icons.person_outlined,
                               size: 20),
                           border: OutlineInputBorder(
-                              borderRadius: BorderRadius.circular(10)),
-                          contentPadding: const EdgeInsets.symmetric(
-                              horizontal: 14, vertical: 12),
+                              borderRadius:
+                                  BorderRadius.circular(10)),
+                          contentPadding:
+                              const EdgeInsets.symmetric(
+                                  horizontal: 14, vertical: 12),
                         ),
                         items: _teachers
                             .map((t) => DropdownMenuItem(
                                   value: t,
                                   child: Text(t.fullName,
-                                      overflow: TextOverflow.ellipsis),
+                                      overflow:
+                                          TextOverflow.ellipsis),
                                 ))
                             .toList(),
                         onChanged: (v) =>
@@ -580,12 +877,15 @@ class _AssignTeacherDialogState
                         initialValue: _selectedGroup,
                         decoration: InputDecoration(
                           labelText: 'Группа',
-                          prefixIcon: const Icon(Icons.group_outlined,
+                          prefixIcon: const Icon(
+                              Icons.group_outlined,
                               size: 20),
                           border: OutlineInputBorder(
-                              borderRadius: BorderRadius.circular(10)),
-                          contentPadding: const EdgeInsets.symmetric(
-                              horizontal: 14, vertical: 12),
+                              borderRadius:
+                                  BorderRadius.circular(10)),
+                          contentPadding:
+                              const EdgeInsets.symmetric(
+                                  horizontal: 14, vertical: 12),
                         ),
                         items: _groups
                             .map((g) => DropdownMenuItem(
@@ -607,10 +907,12 @@ class _AssignTeacherDialogState
                               ? null
                               : _save,
                           style: ElevatedButton.styleFrom(
-                            backgroundColor: const Color(0xFF059669),
+                            backgroundColor:
+                                const Color(0xFF059669),
                             foregroundColor: Colors.white,
                             shape: RoundedRectangleBorder(
-                                borderRadius: BorderRadius.circular(10)),
+                                borderRadius:
+                                    BorderRadius.circular(10)),
                           ),
                           icon: _saving
                               ? const SizedBox(
@@ -628,16 +930,4 @@ class _AssignTeacherDialogState
       ],
     );
   }
-}
-
-class _ColHeader extends StatelessWidget {
-  final String text;
-  const _ColHeader(this.text);
-
-  @override
-  Widget build(BuildContext context) => Text(text,
-      style: const TextStyle(
-          fontWeight: FontWeight.w600,
-          fontSize: 13,
-          color: Color(0xFF374151)));
 }

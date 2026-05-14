@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 import 'services/sim_service.dart';
 import 'services/auth_service.dart' as svc;
 import 'theme.dart' show ThemeProvider, AppThemeMode;
+import 'utils/app_snack.dart';
 
 // ─── AuthGate — точка входа в приложение ─────────────────────────────────────
 //
@@ -80,17 +81,13 @@ class _AuthScreenState extends State<AuthScreen>
                   padding: EdgeInsets.fromLTRB(24, isDesktop ? 24 : 48, 24, 0),
                   child: Column(
                     children: [
-                      Container(
-                        width: 72,
-                        height: 72,
-                        decoration: BoxDecoration(
-                          color: const Color(0xFFD4765B),
-                          borderRadius: BorderRadius.circular(20),
-                        ),
-                        child: const Icon(
-                          Icons.chat_bubble_rounded,
-                          color: Colors.white,
-                          size: 38,
+                      ClipRRect(
+                        borderRadius: BorderRadius.circular(20),
+                        child: Image.asset(
+                          'assets/images/logo.png',
+                          width: 72,
+                          height: 72,
+                          fit: BoxFit.cover,
                         ),
                       ),
                       const SizedBox(height: 16),
@@ -228,11 +225,7 @@ class _LoginFormState extends State<_LoginForm> {
 
   void _snack(String text, {Color? color}) {
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-      content: Text(text),
-      backgroundColor: color,
-      behavior: SnackBarBehavior.floating,
-    ));
+    AppSnack.info(context, text);
   }
 
   Future<void> _submit() async {
@@ -288,14 +281,6 @@ class _LoginFormState extends State<_LoginForm> {
             label: 'Войти',
             isLoading: _isLoading,
             onPressed: _submit,
-          ),
-          const SizedBox(height: 16),
-          TextButton(
-            onPressed: () => widget.tabController.animateTo(1),
-            child: const Text(
-              'Нет аккаунта? Зарегистрироваться',
-              style: TextStyle(color: Color(0xFFD4765B)),
-            ),
           ),
         ],
       ),
@@ -359,6 +344,10 @@ class _RegisterFormState extends State<_RegisterForm> {
   bool _obscureConfirm = true;
   bool _isSubmitting   = false;
   bool _simLoading     = false;
+
+  // ── Согласие с документами ─────────────────────────────────────────────────
+  bool _acceptedTerms   = false;
+  bool _acceptedPrivacy = false;
 
   // ── Вспомогательные геттеры ────────────────────────────────────────────────
 
@@ -486,7 +475,34 @@ class _RegisterFormState extends State<_RegisterForm> {
 
   // ── Отправка ──────────────────────────────────────────────────────────────
 
+  // ── Юридические документы ─────────────────────────────────────────────────
+
+  void _showTermsSheet() =>
+      _showLegalSheet('Пользовательское соглашение', _kTermsSections);
+
+  void _showPrivacySheet() =>
+      _showLegalSheet('Политика конфиденциальности', _kPrivacySections);
+
+  void _showLegalSheet(String title, List<_LegalSection> sections) {
+    showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      useSafeArea: true,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (_) => _LegalDocSheet(title: title, sections: sections),
+    );
+  }
+
   Future<void> _submit() async {
+    if (!_acceptedTerms || !_acceptedPrivacy) {
+      _snack(
+        'Необходимо принять пользовательское соглашение и политику конфиденциальности',
+        color: Colors.red[700],
+      );
+      return;
+    }
     if (!_formKey.currentState!.validate()) return;
     setState(() => _isSubmitting = true);
     try {
@@ -586,12 +602,7 @@ class _RegisterFormState extends State<_RegisterForm> {
 
   void _snack(String text, {SnackBarAction? action, Color? color}) {
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-      content: Text(text),
-      backgroundColor: color,
-      behavior: SnackBarBehavior.floating,
-      action: action,
-    ));
+    AppSnack.info(context, text);
   }
 
   // ── Build ─────────────────────────────────────────────────────────────────
@@ -600,6 +611,7 @@ class _RegisterFormState extends State<_RegisterForm> {
   Widget build(BuildContext context) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
+      mainAxisSize: MainAxisSize.min,
       children: [
         _buildStepIndicator(),
         const SizedBox(height: 20),
@@ -752,8 +764,11 @@ class _RegisterFormState extends State<_RegisterForm> {
           ),
         ),
         const SizedBox(height: 8),
-        // Список
-        SizedBox(height: 220, child: _buildPeopleList(subtleColor)),
+        // Список (высота ограничена, прокручивается внутри)
+        ConstrainedBox(
+          constraints: const BoxConstraints(maxHeight: 180),
+          child: _buildPeopleList(subtleColor),
+        ),
         // Подтверждение выбора
         if (_selectedPerson != null) ...[
           const SizedBox(height: 10),
@@ -820,6 +835,7 @@ class _RegisterFormState extends State<_RegisterForm> {
       ));
     }
     return ListView.builder(
+      shrinkWrap: true,
       itemCount: _filteredPeople.length,
       itemBuilder: (_, i) {
         final p        = _filteredPeople[i];
@@ -922,6 +938,22 @@ class _RegisterFormState extends State<_RegisterForm> {
               simLoading: _simLoading,
             ),
           ],
+          const SizedBox(height: 20),
+          const Divider(height: 1),
+          const SizedBox(height: 8),
+          _LegalCheckbox(
+            value:     _acceptedTerms,
+            onChanged: (v) => setState(() => _acceptedTerms   = v ?? false),
+            label:     'Пользовательское соглашение',
+            onView:    _showTermsSheet,
+          ),
+          const SizedBox(height: 2),
+          _LegalCheckbox(
+            value:     _acceptedPrivacy,
+            onChanged: (v) => setState(() => _acceptedPrivacy = v ?? false),
+            label:     'Политику конфиденциальности',
+            onView:    _showPrivacySheet,
+          ),
         ],
       ),
     );
@@ -958,6 +990,7 @@ class _RegisterFormState extends State<_RegisterForm> {
               ? _AuthButton(
                   label:     'Зарегистрироваться',
                   isLoading: _isSubmitting,
+                  enabled:   _acceptedTerms && _acceptedPrivacy,
                   onPressed: _submit,
                 )
               : FilledButton(
@@ -1101,7 +1134,6 @@ class _AuthField extends StatelessWidget {
   final IconData icon;
   final bool obscureText;
   final Widget? suffixIcon;
-  final TextInputType? keyboardType;
   final String? Function(String?)? validator;
 
   const _AuthField({
@@ -1110,7 +1142,6 @@ class _AuthField extends StatelessWidget {
     required this.icon,
     this.obscureText = false,
     this.suffixIcon,
-    this.keyboardType,
     this.validator,
   });
 
@@ -1119,7 +1150,6 @@ class _AuthField extends StatelessWidget {
     return TextFormField(
       controller: controller,
       obscureText: obscureText,
-      keyboardType: keyboardType,
       validator: validator,
       decoration: _inputDecoration(
         label, icon, Theme.of(context).cardColor,
@@ -1151,11 +1181,13 @@ class _AuthButton extends StatelessWidget {
   final String label;
   final bool isLoading;
   final VoidCallback onPressed;
+  final bool enabled;
 
   const _AuthButton({
     required this.label,
     required this.isLoading,
     required this.onPressed,
+    this.enabled = true,
   });
 
   @override
@@ -1164,7 +1196,7 @@ class _AuthButton extends StatelessWidget {
       width: double.infinity,
       height: 50,
       child: FilledButton(
-        onPressed: isLoading ? null : onPressed,
+        onPressed: (isLoading || !enabled) ? null : onPressed,
         style: FilledButton.styleFrom(
           backgroundColor: const Color(0xFFD4765B),
           disabledBackgroundColor:
@@ -1529,7 +1561,6 @@ class _AuthRoleChip extends StatelessWidget {
     return Expanded(
       child: GestureDetector(
         onTap: onTap,
-
         child: AnimatedContainer(
           duration: const Duration(milliseconds: 200),
           padding: const EdgeInsets.symmetric(vertical: 12),
@@ -1565,4 +1596,481 @@ class _AuthRoleChip extends StatelessWidget {
     );
   }
 }
+
+// ─── Чекбокс принятия юридического документа ─────────────────────────────────
+
+class _LegalCheckbox extends StatelessWidget {
+  final bool value;
+  final ValueChanged<bool?> onChanged;
+  final String label;
+  final VoidCallback onView;
+
+  const _LegalCheckbox({
+    required this.value,
+    required this.onChanged,
+    required this.label,
+    required this.onView,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.center,
+      children: [
+        SizedBox(
+          width: 36,
+          height: 36,
+          child: Checkbox(
+            value: value,
+            onChanged: onChanged,
+            activeColor: const Color(0xFFD4765B),
+            shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(4)),
+          ),
+        ),
+        const SizedBox(width: 4),
+        Expanded(
+          child: Wrap(
+            crossAxisAlignment: WrapCrossAlignment.center,
+            children: [
+              const Text('Принимаю ', style: TextStyle(fontSize: 13)),
+              GestureDetector(
+                onTap: onView,
+                child: Text(
+                  label,
+                  style: const TextStyle(
+                    fontSize: 13,
+                    color: Color(0xFFD4765B),
+                    decoration: TextDecoration.underline,
+                    decorationColor: Color(0xFFD4765B),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+// ─── Нижний лист с текстом юридического документа ────────────────────────────
+
+class _LegalSection {
+  final String title;
+  final String? text;
+  final List<String> items;
+  const _LegalSection({required this.title, this.text, this.items = const []});
+}
+
+class _LegalDocSheet extends StatelessWidget {
+  final String title;
+  final List<_LegalSection> sections;
+
+  const _LegalDocSheet({required this.title, required this.sections});
+
+  @override
+  Widget build(BuildContext context) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    return DraggableScrollableSheet(
+      expand: false,
+      initialChildSize: 0.85,
+      maxChildSize: 0.95,
+      minChildSize: 0.45,
+      builder: (_, ctrl) => Column(
+        children: [
+          // ── Ручка ───────────────────────────────────────────────────────
+          const SizedBox(height: 12),
+          Container(
+            width: 40, height: 4,
+            decoration: BoxDecoration(
+              color: Colors.grey[400],
+              borderRadius: BorderRadius.circular(2),
+            ),
+          ),
+          const SizedBox(height: 14),
+          // ── Заголовок ────────────────────────────────────────────────────
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 20),
+            child: Text(
+              title,
+              style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+              textAlign: TextAlign.center,
+            ),
+          ),
+          const SizedBox(height: 12),
+          const Divider(height: 1),
+          // ── Контент ─────────────────────────────────────────────────────
+          Expanded(
+            child: ListView.builder(
+              controller: ctrl,
+              padding: const EdgeInsets.fromLTRB(20, 16, 20, 24),
+              itemCount: sections.length,
+              itemBuilder: (_, i) =>
+                  _buildSection(context, sections[i], isDark),
+            ),
+          ),
+          // ── Кнопка закрыть ───────────────────────────────────────────────
+          Padding(
+            padding: const EdgeInsets.fromLTRB(20, 4, 20, 20),
+            child: FilledButton(
+              onPressed: () => Navigator.pop(context),
+              style: FilledButton.styleFrom(
+                backgroundColor: const Color(0xFFD4765B),
+                minimumSize: const Size(double.infinity, 46),
+                shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(12)),
+              ),
+              child: const Text('Закрыть',
+                  style: TextStyle(
+                      fontSize: 15, fontWeight: FontWeight.w600)),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildSection(
+      BuildContext context, _LegalSection s, bool isDark) {
+    final bodyColor =
+        isDark ? Colors.white70 : const Color(0xFF424242);
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            s.title,
+            style: TextStyle(
+              fontSize: 14,
+              fontWeight: FontWeight.bold,
+              color: isDark ? Colors.white : Colors.black87,
+            ),
+          ),
+          if (s.text != null) ...[
+            const SizedBox(height: 5),
+            Text(s.text!,
+                style: TextStyle(fontSize: 13, height: 1.55, color: bodyColor)),
+          ],
+          if (s.items.isNotEmpty) ...[
+            const SizedBox(height: 5),
+            ...s.items.map(
+              (item) => Padding(
+                padding: const EdgeInsets.only(top: 3, left: 4),
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text('• ',
+                        style: TextStyle(
+                            fontSize: 13, color: const Color(0xFFD4765B))),
+                    Expanded(
+                      child: Text(item,
+                          style: TextStyle(
+                              fontSize: 13, height: 1.55, color: bodyColor)),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+// ─── Содержимое юридических документов ────────────────────────────────────────
+
+const List<_LegalSection> _kPrivacySections = [
+  _LegalSection(
+    title: '1. Общие положения',
+    text:
+        'Настоящая Политика конфиденциальности определяет порядок сбора, хранения, '
+        'обработки и защиты персональных данных пользователей мессенджера колледжа '
+        '«Caspian College Messenger».\n\n'
+        'Используя Сервис, пользователь соглашается с условиями настоящей Политики.',
+  ),
+  _LegalSection(
+    title: '2. Какие данные собираются',
+    text: 'Сервис может собирать следующие данные:',
+    items: [
+      'имя, фамилия и отчество;',
+      'адрес электронной почты;',
+      'номер телефона;',
+      'группа, должность или статус пользователя;',
+      'изображения профиля;',
+      'сообщения и передаваемые файлы;',
+      'технические данные устройства;',
+      'IP-адрес;',
+      'журналы активности и авторизации.',
+    ],
+  ),
+  _LegalSection(
+    title: '3. Цели обработки данных',
+    text: 'Персональные данные обрабатываются для:',
+    items: [
+      'обеспечения работы Сервиса;',
+      'идентификации пользователей;',
+      'организации учебного взаимодействия;',
+      'отправки уведомлений;',
+      'обеспечения безопасности;',
+      'предотвращения нарушений;',
+      'технической поддержки;',
+      'улучшения функциональности Сервиса.',
+    ],
+  ),
+  _LegalSection(
+    title: '4. Правовые основания обработки',
+    text: 'Обработка данных осуществляется:',
+    items: [
+      'на основании согласия пользователя;',
+      'в рамках выполнения функций образовательной организации;',
+      'в соответствии с законодательством Республики Казахстан.',
+    ],
+  ),
+  _LegalSection(
+    title: '5. Хранение данных',
+    text:
+        'Данные пользователей хранятся на защищённых серверах. '
+        'Администрация принимает разумные технические и организационные меры '
+        'для предотвращения:',
+    items: [
+      'несанкционированного доступа;',
+      'утраты данных;',
+      'изменения или уничтожения информации.',
+    ],
+  ),
+  _LegalSection(
+    title: '6. Передача данных третьим лицам',
+    text:
+        'Персональные данные не передаются третьим лицам, за исключением случаев:',
+    items: [
+      'предусмотренных законодательством;',
+      'необходимых для функционирования Сервиса;',
+      'связанных с обеспечением безопасности;',
+      'при наличии согласия пользователя.',
+    ],
+  ),
+  _LegalSection(
+    title: '7. Использование файлов cookie и технических данных',
+    text:
+        'В веб-версии Сервиса могут использоваться cookie-файлы и аналогичные '
+        'технологии для:',
+    items: [
+      'авторизации пользователей;',
+      'сохранения пользовательских настроек;',
+      'повышения стабильности работы;',
+      'анализа технических ошибок.',
+    ],
+  ),
+  _LegalSection(
+    title: '8. Безопасность данных',
+    text: 'Для защиты данных применяются:',
+    items: [
+      'системы авторизации;',
+      'защищённые соединения;',
+      'разграничение прав доступа;',
+      'резервное копирование;',
+      'мониторинг активности.',
+    ],
+  ),
+  _LegalSection(
+    title: '9. Права пользователя',
+    text: 'Пользователь имеет право:',
+    items: [
+      'получать информацию о своих данных;',
+      'требовать обновления или исправления данных;',
+      'запрашивать удаление учётной записи;',
+      'отзывать согласие на обработку данных;',
+      'обращаться к администрации по вопросам конфиденциальности.',
+    ],
+  ),
+  _LegalSection(
+    title: '10. Удаление учётной записи',
+    text:
+        'При удалении учётной записи часть данных может сохраняться:',
+    items: [
+      'в резервных копиях;',
+      'в журналах безопасности;',
+      'в случаях, предусмотренных законодательством.',
+    ],
+  ),
+  _LegalSection(
+    title: '11. Защита несовершеннолетних',
+    text:
+        'Сервис предназначен для использования в рамках образовательного процесса. '
+        'Администрация принимает меры по защите данных несовершеннолетних '
+        'пользователей в соответствии с законодательством Республики Казахстан.',
+  ),
+  _LegalSection(
+    title: '12. Изменения политики',
+    text:
+        'Администрация вправе изменять настоящую Политику конфиденциальности. '
+        'Новая редакция вступает в силу с момента публикации в Сервисе.',
+  ),
+  _LegalSection(
+    title: '13. Контактная информация',
+    text:
+        'По вопросам обработки персональных данных и работы Сервиса пользователь '
+        'может обратиться к администрации колледжа или разработчикам Сервиса '
+        'через официальные каналы связи.',
+  ),
+  _LegalSection(
+    title: '14. Заключительные положения',
+    text:
+        'Настоящая Политика конфиденциальности применяется ко всем пользователям '
+        'Сервиса. Продолжение использования Сервиса после внесения изменений '
+        'означает согласие пользователя с обновлённой редакцией документа.',
+  ),
+];
+
+const List<_LegalSection> _kTermsSections = [
+  _LegalSection(
+    title: '1. Общие положения',
+    text:
+        'Настоящее Пользовательское соглашение регулирует порядок использования '
+        'мессенджера колледжа (далее — «Сервис»), предназначенного для обмена '
+        'сообщениями, файлами и уведомлениями между обучающимися, преподавателями '
+        'и сотрудниками образовательной организации.\n\n'
+        'Используя Сервис, пользователь подтверждает согласие с условиями '
+        'настоящего соглашения.\n\n'
+        'Администрация Сервиса оставляет за собой право изменять настоящее '
+        'соглашение без предварительного уведомления пользователей.',
+  ),
+  _LegalSection(
+    title: '2. Термины и определения',
+    items: [
+      'Сервис — программное обеспечение «Caspian College Messenger», включая '
+          'мобильное приложение, веб-версию, серверную инфраструктуру и связанные функции.',
+      'Пользователь — студент, преподаватель, сотрудник или иное лицо, '
+          'получившее доступ к Сервису.',
+      'Администрация — уполномоченные сотрудники колледжа и разработчики, '
+          'обеспечивающие поддержку и функционирование Сервиса.',
+      'Контент — текстовые сообщения, изображения, файлы, видео, аудио и иные '
+          'материалы, передаваемые через Сервис.',
+    ],
+  ),
+  _LegalSection(
+    title: '3. Назначение Сервиса',
+    text: 'Сервис предназначен исключительно для:',
+    items: [
+      'учебной коммуникации;',
+      'обмена информацией между студентами и преподавателями;',
+      'получения уведомлений;',
+      'взаимодействия внутри образовательного процесса;',
+      'передачи файлов и учебных материалов.',
+    ],
+  ),
+  _LegalSection(
+    title: '4. Регистрация и доступ',
+    text: 'Для доступа к Сервису пользователь обязан:',
+    items: [
+      'предоставить достоверные данные;',
+      'использовать только собственную учётную запись;',
+      'обеспечить конфиденциальность своих данных для входа.',
+    ],
+  ),
+  _LegalSection(
+    title: '5. Права и обязанности пользователя',
+    text: 'Пользователь имеет право:\n'
+        '• использовать функции Сервиса в рамках его назначения;\n'
+        '• получать техническую поддержку;\n'
+        '• обращаться к администрации по вопросам работы Сервиса.\n\n'
+        'Пользователь обязуется:',
+    items: [
+      'соблюдать законодательство Республики Казахстан;',
+      'не распространять запрещённый контент;',
+      'не публиковать оскорбительные, дискриминационные или незаконные материалы;',
+      'не предпринимать попыток взлома или нарушения работы Сервиса;',
+      'не выдавать себя за другое лицо;',
+      'соблюдать нормы сетевого этикета.',
+    ],
+  ),
+  _LegalSection(
+    title: '6. Запрещённые действия',
+    text: 'Пользователю запрещается:',
+    items: [
+      'использовать Сервис для спама;',
+      'распространять вредоносное программное обеспечение;',
+      'публиковать материалы, нарушающие авторские права;',
+      'осуществлять массовую рассылку без согласия получателей;',
+      'использовать Сервис для противоправной деятельности;',
+      'вмешиваться в работу серверов и сетевой инфраструктуры.',
+    ],
+  ),
+  _LegalSection(
+    title: '7. Контент пользователей',
+    text:
+        'Пользователь сохраняет права на принадлежащий ему контент. '
+        'Размещая контент в Сервисе, пользователь предоставляет администрации '
+        'право на его обработку, хранение и передачу исключительно в целях '
+        'обеспечения работы Сервиса. Администрация вправе удалить контент, '
+        'нарушающий законодательство или настоящее соглашение.',
+  ),
+  _LegalSection(
+    title: '8. Конфиденциальность переписки',
+    text:
+        'Администрация стремится обеспечивать конфиденциальность пользовательской '
+        'переписки. Доступ к сообщениям может быть предоставлен только:',
+    items: [
+      'в случаях, предусмотренных законодательством;',
+      'при наличии технической необходимости для устранения неисправностей;',
+      'при расследовании нарушений правил использования Сервиса.',
+    ],
+  ),
+  _LegalSection(
+    title: '9. Ответственность сторон',
+    text:
+        'Пользователь самостоятельно несёт ответственность за размещаемый '
+        'контент и свои действия в Сервисе.\n\n'
+        'Администрация не несёт ответственности:',
+    items: [
+      'за временные сбои и перерывы в работе Сервиса;',
+      'за потерю данных по причинам, не зависящим от администрации;',
+      'за действия третьих лиц;',
+      'за содержание сообщений пользователей.',
+    ],
+  ),
+  _LegalSection(
+    title: '10. Ограничение доступа',
+    text: 'Администрация имеет право:',
+    items: [
+      'временно ограничить доступ к Сервису;',
+      'удалить учётную запись пользователя;',
+      'заблокировать пользователя при нарушении правил.',
+    ],
+  ),
+  _LegalSection(
+    title: '11. Интеллектуальная собственность',
+    text:
+        'Все элементы интерфейса, логотипы, программный код и дизайн Сервиса '
+        'являются объектами интеллектуальной собственности и защищаются '
+        'законодательством. Копирование, модификация или распространение '
+        'компонентов Сервиса без разрешения запрещены.',
+  ),
+  _LegalSection(
+    title: '12. Техническая поддержка',
+    text:
+        'Техническая поддержка предоставляется в рамках возможностей '
+        'администрации. Сроки устранения неисправностей могут зависеть от '
+        'сложности проблемы и технических обстоятельств.',
+  ),
+  _LegalSection(
+    title: '13. Прекращение использования',
+    text:
+        'Пользователь вправе прекратить использование Сервиса в любое время. '
+        'Администрация вправе прекратить предоставление доступа при нарушении '
+        'настоящего соглашения.',
+  ),
+  _LegalSection(
+    title: '14. Заключительные положения',
+    text:
+        'Настоящее соглашение регулируется законодательством Республики Казахстан. '
+        'Если отдельные положения соглашения будут признаны недействительными, '
+        'остальные положения сохраняют юридическую силу. '
+        'Использование Сервиса означает полное согласие пользователя с условиями '
+        'настоящего соглашения.',
+  ),
+];
 

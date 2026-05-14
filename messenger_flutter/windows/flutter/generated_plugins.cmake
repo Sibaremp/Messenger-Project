@@ -3,6 +3,7 @@
 #
 
 list(APPEND FLUTTER_PLUGIN_LIST
+  emoji_picker_flutter
   file_selector_windows
   firebase_core
   flutter_secure_storage_windows
@@ -11,9 +12,11 @@ list(APPEND FLUTTER_PLUGIN_LIST
   media_kit_video
   permission_handler_windows
   record_windows
+  screen_retriever
   share_plus
   url_launcher_windows
   volume_controller
+  window_manager
 )
 
 list(APPEND FLUTTER_FFI_PLUGIN_LIST

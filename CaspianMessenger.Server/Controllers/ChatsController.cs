@@ -13,45 +13,60 @@ namespace CaspianMessenger.Server.Controllers;
 [ApiController]
 [Route("api/chats")]
 [Authorize]
-public class ChatsController(ChatService chatService, MessageService messageService, FileService fileService, AppDbContext db) : ControllerBase
+public class ChatsController(
+    ChatService chatService,
+    MessageService messageService,
+    FileService fileService,
+    AppDbContext db,
+    EncryptionService encryption) : ControllerBase
 {
     [HttpGet]
     public async Task<IActionResult> GetChats()
     {
-        var chats = await chatService.GetUserChatsAsync(GetUserId());
+        var userId = GetUserId();
+        var chats  = await chatService.GetUserChatsAsync(userId);
+        encryption.EncryptChatsInPlace(chats, userId);
         return Ok(chats);
     }
 
     [HttpGet("{chatId:guid}")]
     public async Task<IActionResult> GetChat(Guid chatId, [FromQuery] int offset = 0, [FromQuery] int limit = 50)
     {
-        var chat = await chatService.GetChatAsync(chatId, GetUserId(), offset, limit);
+        var userId = GetUserId();
+        var chat   = await chatService.GetChatAsync(chatId, userId, offset, limit);
         if (chat == null) return NotFound();
+        encryption.EncryptChatInPlace(chat, userId);
         return Ok(chat);
     }
 
     [HttpPost("direct")]
     public async Task<IActionResult> CreateDirectChat([FromBody] CreateDirectChatRequest req)
     {
-        var (chat, error) = await chatService.CreateDirectChatAsync(GetUserId(), req);
+        var userId = GetUserId();
+        var (chat, error) = await chatService.CreateDirectChatAsync(userId, req);
         if (error != null) return BadRequest(new { message = error });
+        encryption.EncryptChatInPlace(chat!, userId);
         return Ok(chat);
     }
 
     [HttpPost("group")]
     public async Task<IActionResult> CreateGroupChat([FromBody] CreateGroupRequest req)
     {
-        var (chat, error) = await chatService.CreateGroupChatAsync(GetUserId(), req);
+        var userId = GetUserId();
+        var (chat, error) = await chatService.CreateGroupChatAsync(userId, req);
         if (error != null) return BadRequest(new { message = error });
+        encryption.EncryptChatInPlace(chat!, userId);
         return Ok(chat);
     }
 
     [HttpPut("{chatId:guid}/settings")]
     public async Task<IActionResult> UpdateSettings(Guid chatId, [FromBody] UpdateChatSettingsRequest req)
     {
-        var (chat, error) = await chatService.UpdateChatSettingsAsync(chatId, GetUserId(), req);
+        var userId = GetUserId();
+        var (chat, error) = await chatService.UpdateChatSettingsAsync(chatId, userId, req);
         if (error == "Forbidden") return Forbid();
         if (error != null) return NotFound(new { message = error });
+        encryption.EncryptChatInPlace(chat!, userId);
         return Ok(chat);
     }
 
@@ -67,34 +82,54 @@ public class ChatsController(ChatService chatService, MessageService messageServ
     [HttpPost("{chatId:guid}/members")]
     public async Task<IActionResult> AddMember(Guid chatId, [FromBody] AddMemberRequest req)
     {
-        var (chat, error) = await chatService.AddMemberAsync(chatId, GetUserId(), req.UserId, req.Role);
+        var requesterId = GetUserId();
+        var (chat, error) = await chatService.AddMemberAsync(chatId, requesterId, req.UserId, req.Role);
         if (error == "Forbidden") return Forbid();
         if (error != null) return BadRequest(new { message = error });
+        encryption.EncryptChatInPlace(chat!, requesterId);
+        return Ok(chat);
+    }
+
+    /// <summary>Текущий пользователь вступает в группу по приглашению (self-join).</summary>
+    [HttpPost("{chatId:guid}/join")]
+    public async Task<IActionResult> JoinChat(Guid chatId)
+    {
+        var userId = GetUserId();
+        var (chat, error) = await chatService.JoinChatAsync(chatId, userId);
+        if (error == "Already a member") return Conflict(new { message = error });
+        if (error != null) return BadRequest(new { message = error });
+        encryption.EncryptChatInPlace(chat!, userId);
         return Ok(chat);
     }
 
     [HttpPut("{chatId:guid}/members/{userId:guid}")]
     public async Task<IActionResult> UpdateMemberRole(Guid chatId, Guid userId, [FromBody] UpdateMemberRoleRequest req)
     {
-        var (chat, error) = await chatService.UpdateMemberRoleAsync(chatId, GetUserId(), userId, req.Role);
+        var requesterId = GetUserId();
+        var (chat, error) = await chatService.UpdateMemberRoleAsync(chatId, requesterId, userId, req.Role);
         if (error == "Only creator can change roles") return Forbid();
         if (error != null) return NotFound(new { message = error });
+        encryption.EncryptChatInPlace(chat!, requesterId);
         return Ok(chat);
     }
 
     [HttpDelete("{chatId:guid}/members/{userId:guid}")]
     public async Task<IActionResult> RemoveMember(Guid chatId, Guid userId)
     {
-        var (chat, error) = await chatService.RemoveMemberAsync(chatId, GetUserId(), userId);
+        var requesterId = GetUserId();
+        var (chat, error) = await chatService.RemoveMemberAsync(chatId, requesterId, userId);
         if (error == "Forbidden") return Forbid();
         if (error != null) return NotFound(new { message = error });
+        encryption.EncryptChatInPlace(chat!, requesterId);
         return Ok(chat);
     }
 
     [HttpGet("search")]
     public async Task<IActionResult> SearchChats([FromQuery] string q)
     {
-        var results = await chatService.SearchChatsAsync(GetUserId(), q);
+        var userId  = GetUserId();
+        var results = await chatService.SearchChatsAsync(userId, q);
+        encryption.EncryptChatsInPlace(results, userId);
         return Ok(results);
     }
 

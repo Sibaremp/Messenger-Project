@@ -6,6 +6,7 @@ import '../app_constants.dart';
 import '../models.dart' show DeviceSession;
 import '../services/auth_service.dart' as svc;
 import '../services/chat_service.dart' show ChatEvent, SessionTerminated;
+import '../utils/app_snack.dart';
 
 /// Экран управления активными устройствами / сессиями пользователя.
 ///
@@ -187,9 +188,7 @@ class _DevicesScreenState extends State<DevicesScreen> {
 
   void _snack(String text) {
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(text), behavior: SnackBarBehavior.floating),
-    );
+    AppSnack.info(context, text);
   }
 
   /// Возвращает true на нативных мобильных платформах (Android / iOS).
@@ -320,7 +319,7 @@ class _DevicesScreenState extends State<DevicesScreen> {
                 icon: const Icon(Icons.refresh),
                 label: const Text('Повторить'),
                 style: FilledButton.styleFrom(
-                    backgroundColor: AppColors.primary),
+                    backgroundColor: Theme.of(context).colorScheme.primary),
               ),
             ],
           ),
@@ -462,11 +461,11 @@ class _DeviceSessionTile extends StatelessWidget {
                   width: 44,
                   height: 44,
                   decoration: BoxDecoration(
-                    color: AppColors.primary.withValues(alpha: 0.1),
+                    color: Theme.of(context).colorScheme.primary.withValues(alpha: 0.1),
                     borderRadius: BorderRadius.circular(11),
                   ),
                   child: Icon(platformIcon,
-                      color: AppColors.primary, size: 22),
+                      color: Theme.of(context).colorScheme.primary, size: 22),
                 ),
                 const SizedBox(width: 12),
                 // Имя + платформа + локация
@@ -510,16 +509,16 @@ class _DeviceSessionTile extends StatelessWidget {
                     padding: const EdgeInsets.symmetric(
                         horizontal: 9, vertical: 4),
                     decoration: BoxDecoration(
-                      color: AppColors.primary.withValues(alpha: 0.12),
+                      color: Theme.of(context).colorScheme.primary.withValues(alpha: 0.12),
                       borderRadius: BorderRadius.circular(8),
                     ),
-                    child: const Text(
+                    child: Text(
                       'Это\nустройство',
                       textAlign: TextAlign.center,
                       style: TextStyle(
                         fontSize: 10,
                         fontWeight: FontWeight.w700,
-                        color: AppColors.primary,
+                        color: Theme.of(context).colorScheme.primary,
                         height: 1.2,
                       ),
                     ),

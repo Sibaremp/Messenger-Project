@@ -16,11 +16,14 @@ import '../app_constants.dart';
 import '../services/api_config.dart' show ApiConfig;
 import '../services/file_download_service.dart';
 import '../services/volume_service.dart';
+import 'package:cached_network_image/cached_network_image.dart' hide DownloadProgress;
 import 'package:share_plus/share_plus.dart';
 import '../profile_screen.dart' show ProfileAvatar;
+import '../theme.dart' show CustomChatTheme;
 import '../services/audio_service.dart';
 import 'audio_message_bubble.dart';
 import '../utils/profanity_filter.dart';
+import '../utils/app_snack.dart';
 
 // ─── Аватар ───────────────────────────────────────────────────────────────────
 
@@ -85,6 +88,25 @@ class _ChatAvatarState extends State<ChatAvatar> {
       if (ApiConfig.isServerMediaPath(path)) {
         final url = ApiConfig.resolveMediaUrl(path);
         if (url != null) {
+          // GIF-аватары показываем через CachedNetworkImage — он анимирует GIF.
+          final isGif = url.toLowerCase().endsWith('.gif');
+          if (isGif) {
+            return ClipOval(
+              child: SizedBox(
+                width: widget.radius * 2,
+                height: widget.radius * 2,
+                child: CachedNetworkImage(
+                  imageUrl: url,
+                  fit: BoxFit.cover,
+                  placeholder: (_, __) => Container(color: _color.withValues(alpha: 0.18)),
+                  errorWidget: (_, __, ___) {
+                    if (mounted) setState(() => _imageError = true);
+                    return Container(color: _color.withValues(alpha: 0.18));
+                  },
+                ),
+              ),
+            );
+          }
           return CircleAvatar(
             radius: widget.radius,
             backgroundColor: _color.withValues(alpha: 0.18),
@@ -239,7 +261,7 @@ class PinnedMessagesBar extends StatelessWidget {
                 width: 2.5,
                 height: 34,
                 decoration: BoxDecoration(
-                  color: AppColors.primary,
+                  color: Theme.of(context).colorScheme.primary,
                   borderRadius: BorderRadius.circular(2),
                 ),
               ),
@@ -251,10 +273,10 @@ class PinnedMessagesBar extends StatelessWidget {
                   children: [
                     Row(
                       children: [
-                        const Text(
+                        Text(
                           'Закреплённое сообщение',
                           style: TextStyle(
-                            color: AppColors.primary,
+                            color: Theme.of(context).colorScheme.primary,
                             fontSize: 12,
                             fontWeight: FontWeight.w600,
                           ),
@@ -435,7 +457,7 @@ class _PollCardState extends State<PollCard> {
     final isDark  = Theme.of(context).brightness == Brightness.dark;
     final textClr  = isMe ? Colors.white : (isDark ? Colors.white : Colors.black87);
     final subtleClr = isMe ? Colors.white54 : Colors.black45;
-    final accentClr = isMe ? Colors.white   : AppColors.primary;
+    final accentClr = isMe ? Colors.white   : Theme.of(context).colorScheme.primary;
     final total = poll.totalVotes;
 
     return Column(
@@ -514,7 +536,7 @@ class _PollCardState extends State<PollCard> {
                 _isClosing ? 'Завершение…' : 'Завершить опрос',
                 style: TextStyle(
                   fontSize: 12,
-                  color: isMe ? Colors.white70 : AppColors.primary,
+                  color: isMe ? Colors.white70 : Theme.of(context).colorScheme.primary,
                   fontWeight: FontWeight.w500,
                 ),
               ),
@@ -529,8 +551,8 @@ class _PollCardState extends State<PollCard> {
               style: TextButton.styleFrom(
                 backgroundColor: isMe
                     ? Colors.white.withValues(alpha: 0.2)
-                    : AppColors.primary.withValues(alpha: 0.12),
-                foregroundColor: isMe ? Colors.white : AppColors.primary,
+                    : Theme.of(context).colorScheme.primary.withValues(alpha: 0.12),
+                foregroundColor: isMe ? Colors.white : Theme.of(context).colorScheme.primary,
                 padding: const EdgeInsets.symmetric(vertical: 6),
                 shape: RoundedRectangleBorder(
                   borderRadius: BorderRadius.circular(8),
@@ -647,7 +669,7 @@ class _PollCardState extends State<PollCard> {
                         ? accentClr
                         : (isMe
                             ? Colors.white.withValues(alpha: 0.45)
-                            : AppColors.primary.withValues(alpha: 0.35)),
+                            : Theme.of(context).colorScheme.primary.withValues(alpha: 0.35)),
                   ),
                 ),
               ),
@@ -737,6 +759,9 @@ class MessageBubble extends StatefulWidget {
   // ── Академический раздел ───────────────────────────────
   /// Если true — текст сообщений цензурируется при отображении.
   final bool isAcademic;
+  // ── Приглашения в группу ───────────────────────────────
+  /// Вызывается когда пользователь нажимает «Принять» на карточке-приглашении.
+  final Future<void> Function(GroupInvite invite)? onAcceptInvite;
 
   const MessageBubble({
     super.key,
@@ -759,6 +784,7 @@ class MessageBubble extends StatefulWidget {
     this.canClosePoll = false,
     this.onMentionTap,
     this.isAcademic = false,
+    this.onAcceptInvite,
   });
 
   @override
@@ -798,21 +824,42 @@ class _MessageBubbleState extends State<MessageBubble>
     // Опросы занимают фиксированную ширину 88 % экрана (иначе IntrinsicWidth
     // сжимает пузырь до минимума и Spacer внутри PollCard не работает).
     // Обычные сообщения по-прежнему используют IntrinsicWidth (shrink-to-fit).
+    final isInvite    = message.groupInvite != null;
+    final isGif       = message.isGif;
+    final isStickerEmoji = message.isEmojiOnly;
     final isPoll = message.poll != null;
     // Альбом — только когда вложений больше одного.
     // Сервер всегда заполняет attachments[] даже для одиночных вложений (аудио,
     // одно фото), поэтому isNotEmpty недостаточно — нужен length > 1.
     final isAlbum = message.attachments != null && message.attachments!.length > 1;
+    // Сервер может прислать attachment=null + attachments=[item] для одиночных вложений.
+    // В этом случае message.attachment == null, и вложение не рендерится.
+    // Решение: если attachment == null но attachments содержит ровно 1 элемент —
+    // используем его как одиночное вложение.
+    final effectiveAttachment = message.attachment ??
+        (!isAlbum && (message.attachments?.length == 1)
+            ? message.attachments!.first
+            : null);
     final screenWidth = MediaQuery.of(context).size.width;
-    // Для альбома ширина = min(bubbleMaxWidth, 320) — как в Telegram:
+    final isDesktop = screenWidth > AppSizes.desktopBreakpoint;
+    // Для альбома ширина = min(bubbleMaxWidth, 320/480) — как в Telegram:
     // альбом не должен растягиваться на весь широкий десктоп-чат.
     final bubbleMaxWidth = screenWidth *
         (isPoll ? 0.88 : AppSizes.bubbleMaxWidthFactor);
-    final albumWidth = isAlbum ? bubbleMaxWidth.clamp(200.0, 320.0) : bubbleMaxWidth;
+    final albumWidth = isAlbum
+        ? bubbleMaxWidth.clamp(200.0, isDesktop ? 480.0 : 320.0)
+        : bubbleMaxWidth;
+    // Карточка-приглашение: фиксированная ширина пузыря (как у опроса), иначе
+    // IntrinsicWidth вычисляет ширину только по нефлекс-элементам (аватар + кнопка)
+    // и Flexible-столбец с названием чата получает 0px — текст не виден на мобиле.
+    final inviteWidth = bubbleMaxWidth.clamp(200.0, 320.0);
     Widget bubbleChild = Container(
-      // Альбом: фиксированная ширина ≤ 320px, опросы: 88% экрана, остальные: shrink.
-      width:       (isPoll || isAlbum) ? (isPoll ? bubbleMaxWidth : albumWidth) : null,
-      constraints: (isPoll || isAlbum)
+      // Альбом: фиксированная ширина ≤ 320px, опросы: 88% экрана,
+      // карточка-приглашение: ≤ 320px, остальные: shrink-to-fit.
+      width: (isPoll || isAlbum || isInvite)
+          ? (isPoll ? bubbleMaxWidth : isInvite ? inviteWidth : albumWidth)
+          : null,
+      constraints: (isPoll || isAlbum || isInvite)
           ? null
           : BoxConstraints(maxWidth: bubbleMaxWidth),
         // У альбома убираем горизонтальные отступы — изображения идут
@@ -821,7 +868,9 @@ class _MessageBubbleState extends State<MessageBubble>
             ? const EdgeInsets.symmetric(vertical: 0, horizontal: 0)
             : const EdgeInsets.symmetric(vertical: 8, horizontal: 12),
         decoration: BoxDecoration(
-          color: isMe ? AppColors.chatMe : Theme.of(context).cardColor,
+          color: isMe
+              ? (Theme.of(context).extension<CustomChatTheme>()?.myBubbleColor ?? AppColors.chatMe)
+              : (Theme.of(context).extension<CustomChatTheme>()?.otherBubbleColor ?? Theme.of(context).cardColor),
           borderRadius: BorderRadius.only(
             topLeft: const Radius.circular(12),
             topRight: const Radius.circular(12),
@@ -832,7 +881,7 @@ class _MessageBubbleState extends State<MessageBubble>
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            if (showSenderName && !isMe && message.senderName != null)
+            if (showSenderName && !isMe && message.senderName != null && !message.postAsCommunity)
               Padding(
                 padding: const EdgeInsets.only(bottom: 4),
                 child: Text.rich(
@@ -847,7 +896,8 @@ class _MessageBubbleState extends State<MessageBubble>
                         ),
                       ),
                     TextSpan(
-                      text: message.senderName!,
+                      // Показываем ФИО (Фамилия И.О.) если сервер его вернул, иначе логин
+                      text: message.senderDisplayName ?? message.senderName!,
                       style: TextStyle(
                         fontSize: 12,
                         fontWeight: FontWeight.w600,
@@ -860,6 +910,17 @@ class _MessageBubbleState extends State<MessageBubble>
             // ── Ответ (reply preview) ────────────────────
             if (message.replyTo != null)
               _ReplyPreview(reply: message.replyTo!, isMe: isMe),
+            // ── Карточка-приглашение в группу ────────────
+            if (message.groupInvite != null) ...[
+              _GroupInviteCard(
+                invite: message.groupInvite!,
+                isMe: isMe,
+                onAccept: widget.onAcceptInvite != null
+                    ? () => widget.onAcceptInvite!(message.groupInvite!)
+                    : null,
+              ),
+              const SizedBox(height: 4),
+            ],
             // ── Опрос ────────────────────────────────────
             if (message.poll != null) ...[
               PollCard(
@@ -883,13 +944,14 @@ class _MessageBubbleState extends State<MessageBubble>
               if (message.text.isNotEmpty) const SizedBox(height: 4),
             ],
             // ── Одиночное вложение (аудио / фото / видео / документ) ─────
-            if (!isAlbum && message.attachment != null)
-              _AttachmentPreview(attachment: message.attachment!, isMe: isMe, allMedia: widget.allMedia),
+            if (!isAlbum && effectiveAttachment != null)
+              _AttachmentPreview(attachment: effectiveAttachment, isMe: isMe, allMedia: widget.allMedia),
             // Небольшой отступ-разделитель между медиа и подписью
-            if (!isAlbum && message.attachment != null && message.text.isNotEmpty)
+            if (!isAlbum && effectiveAttachment != null && message.text.isNotEmpty)
               const SizedBox(height: 3),
             // ── Текст (с подсвеченными @упоминаниями) + время + статус ──
-            if (message.text.isNotEmpty)
+            // Для карточки-приглашения текст (raw INVITE{...}) не показываем
+            if (message.text.isNotEmpty && !isInvite)
               Padding(
                 // У альбома текст рендерится вне внешнего padding — добавляем свой
                 padding: isAlbum
@@ -907,7 +969,7 @@ class _MessageBubbleState extends State<MessageBubble>
                           baseStyle: TextStyle(
                             color: isMe ? AppColors.textLight : null,
                           ),
-                          mentionColor: isMe ? Colors.white : AppColors.primary,
+                          mentionColor: isMe ? Colors.white : Theme.of(context).colorScheme.primary,
                           onMentionTap: widget.onMentionTap,
                         ),
                       ),
@@ -955,8 +1017,18 @@ class _MessageBubbleState extends State<MessageBubble>
           ],
         ),
     );
-    // Альбом и опросы — фиксированная ширина; текстовые — shrink-to-fit.
-    final bubble = (isPoll || isAlbum) ? bubbleChild : IntrinsicWidth(child: bubbleChild);
+    // Альбом, опросы, приглашения — фиксированная ширина; текстовые — shrink-to-fit.
+    final bubble = (isPoll || isAlbum || isInvite) ? bubbleChild : IntrinsicWidth(child: bubbleChild);
+
+    // ── Emoji-стикер: без пузыря, крупно ─────────────────────────────────────
+    if (isStickerEmoji) {
+      return _buildStickerRow(context, message, isMe, isSelected, isSelectionMode, onTap, onLongPress);
+    }
+
+    // ── GIF: без пузыря, только анимация ─────────────────────────────────────
+    if (isGif) {
+      return _buildGifRow(context, message, isMe, isSelected, isSelectionMode, onTap, onLongPress, bubbleMaxWidth);
+    }
 
     // В режиме выделения касания переключают выбор; вне него долгое нажатие открывает меню действий.
     Widget row = GestureDetector(
@@ -967,7 +1039,7 @@ class _MessageBubbleState extends State<MessageBubble>
       child: AnimatedContainer(
         duration: const Duration(milliseconds: 150),
         color: isSelected
-            ? AppColors.primary.withValues(alpha: 0.12)
+            ? Theme.of(context).colorScheme.primary.withValues(alpha: 0.12)
             : Colors.transparent,
         padding: const EdgeInsets.symmetric(vertical: 4, horizontal: 8),
         child: Row(
@@ -985,9 +1057,9 @@ class _MessageBubbleState extends State<MessageBubble>
                         height: 22,
                         decoration: BoxDecoration(
                           shape: BoxShape.circle,
-                          color: isSelected ? AppColors.primary : Colors.transparent,
+                          color: isSelected ? Theme.of(context).colorScheme.primary : Colors.transparent,
                           border: Border.all(
-                            color: isSelected ? AppColors.primary : AppColors.subtle,
+                            color: isSelected ? Theme.of(context).colorScheme.primary : AppColors.subtle,
                             width: 2,
                           ),
                         ),
@@ -1033,7 +1105,7 @@ class _MessageBubbleState extends State<MessageBubble>
                                 mainAxisSize: MainAxisSize.min,
                                 children: [
                                   Icon(Icons.mode_comment_outlined,
-                                      size: 14, color: AppColors.primary),
+                                      size: 14, color: Theme.of(context).colorScheme.primary),
                                   const SizedBox(width: 4),
                                   Text(
                                     message.comments.isEmpty
@@ -1041,7 +1113,7 @@ class _MessageBubbleState extends State<MessageBubble>
                                         : '${message.comments.length} комментари${_commentSuffix(message.comments.length)}',
                                     style: TextStyle(
                                       fontSize: 12,
-                                      color: AppColors.primary,
+                                      color: Theme.of(context).colorScheme.primary,
                                       fontWeight: FontWeight.w500,
                                     ),
                                   ),
@@ -1110,13 +1182,13 @@ class _MessageBubbleState extends State<MessageBubble>
                     decoration: BoxDecoration(
                       shape: BoxShape.circle,
                       color: _swipeTriggered
-                          ? AppColors.primary
-                          : AppColors.primary.withValues(alpha: 0.12),
+                          ? Theme.of(context).colorScheme.primary
+                          : Theme.of(context).colorScheme.primary.withValues(alpha: 0.12),
                     ),
                     child: Icon(
                       Icons.reply,
                       size: 18 + (swipeProgress * 4),
-                      color: _swipeTriggered ? Colors.white : AppColors.primary,
+                      color: _swipeTriggered ? Colors.white : Theme.of(context).colorScheme.primary,
                     ),
                   ),
                 ),
@@ -1132,6 +1204,132 @@ class _MessageBubbleState extends State<MessageBubble>
     }
 
     return row;
+  }
+
+  // ── Emoji-стикер (без пузыря) ─────────────────────────────────────────────
+
+  Widget _buildStickerRow(
+    BuildContext context, Message message, bool isMe,
+    bool isSelected, bool isSelectionMode,
+    VoidCallback onTap, VoidCallback onLongPress,
+  ) {
+    final timeColor = AppColors.subtle;
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onTap:          isSelectionMode ? onTap : null,
+      onLongPress:    isSelectionMode ? null : onLongPress,
+      onSecondaryTap: isSelectionMode ? null : onLongPress,
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 150),
+        color: isSelected
+            ? Theme.of(context).colorScheme.primary.withValues(alpha: 0.12)
+            : Colors.transparent,
+        padding: const EdgeInsets.symmetric(vertical: 2, horizontal: 8),
+        child: Row(
+          mainAxisAlignment:
+              isMe ? MainAxisAlignment.end : MainAxisAlignment.start,
+          crossAxisAlignment: CrossAxisAlignment.end,
+          children: [
+            Column(
+              crossAxisAlignment:
+                  isMe ? CrossAxisAlignment.end : CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(message.text.trim(),
+                    style: const TextStyle(fontSize: 52, height: 1.1)),
+                const SizedBox(height: 2),
+                Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(formatTime(message.time),
+                        style: TextStyle(fontSize: 10, color: timeColor)),
+                    if (isMe) ...[
+                      const SizedBox(width: 3),
+                      _StatusIcon(status: message.status, color: timeColor),
+                    ],
+                  ],
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // ── GIF (без пузыря, с анимацией) ─────────────────────────────────────────
+
+  Widget _buildGifRow(
+    BuildContext context, Message message, bool isMe,
+    bool isSelected, bool isSelectionMode,
+    VoidCallback onTap, VoidCallback onLongPress, double maxWidth,
+  ) {
+    final timeColor = AppColors.subtle;
+    final gifUrl    = message.gifUrl!;
+    final gifWidth  = (maxWidth * 0.65).clamp(140.0, 260.0);
+
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onTap:          isSelectionMode ? onTap : null,
+      onLongPress:    isSelectionMode ? null : onLongPress,
+      onSecondaryTap: isSelectionMode ? null : onLongPress,
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 150),
+        color: isSelected
+            ? Theme.of(context).colorScheme.primary.withValues(alpha: 0.12)
+            : Colors.transparent,
+        padding: const EdgeInsets.symmetric(vertical: 4, horizontal: 8),
+        child: Row(
+          mainAxisAlignment:
+              isMe ? MainAxisAlignment.end : MainAxisAlignment.start,
+          children: [
+            Column(
+              crossAxisAlignment:
+                  isMe ? CrossAxisAlignment.end : CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                ClipRRect(
+                  borderRadius: BorderRadius.circular(12),
+                  child: Image.network(
+                    gifUrl,
+                    width: gifWidth,
+                    fit: BoxFit.cover,
+                    loadingBuilder: (_, child, progress) =>
+                        progress == null
+                            ? child
+                            : SizedBox(
+                                width: gifWidth,
+                                height: gifWidth * 0.7,
+                                child: const Center(
+                                  child: CircularProgressIndicator(strokeWidth: 2),
+                                ),
+                              ),
+                    errorBuilder: (_, __, ___) => SizedBox(
+                      width: gifWidth,
+                      height: 60,
+                      child: const Center(
+                          child: Icon(Icons.broken_image_outlined)),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 2),
+                Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(formatTime(message.time),
+                        style: TextStyle(fontSize: 10, color: timeColor)),
+                    if (isMe) ...[
+                      const SizedBox(width: 3),
+                      _StatusIcon(status: message.status, color: timeColor),
+                    ],
+                  ],
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
   }
 }
 
@@ -1283,17 +1481,10 @@ Future<void> saveAttachmentToFolder(BuildContext context, Attachment att) async 
     }
 
     if (!context.mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text('Сохранено: $fileName'),
-        duration: const Duration(seconds: 3),
-      ),
-    );
+        AppSnack.success(context, 'Сохранено: $fileName');
   } catch (e) {
     if (!context.mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('Ошибка сохранения: $e')),
-    );
+        AppSnack.error(context, 'Ошибка сохранения: $e');
   }
 }
 
@@ -1331,6 +1522,9 @@ class _ImagePreview extends StatelessWidget {
   Widget build(BuildContext context) {
     final path = attachment.path;
     final isDark = Theme.of(context).brightness == Brightness.dark;
+    final isDesktop = MediaQuery.of(context).size.width > AppSizes.desktopBreakpoint;
+    final w = isDesktop ? 340.0 : 220.0;
+    final h = isDesktop ? 280.0 : 200.0;
 
     void openViewer() => MediaViewerScreen.open(context, attachment, allMedia: allMedia);
 
@@ -1347,13 +1541,13 @@ class _ImagePreview extends StatelessWidget {
             borderRadius: BorderRadius.circular(10),
             child: Image.network(
               url,
-              width: 220,
-              height: 200,
+              width: w,
+              height: h,
               fit: BoxFit.cover,
               loadingBuilder: (ctx, child, progress) {
                 if (progress == null) return child;
                 return Container(
-                  width: 220, height: 200,
+                  width: w, height: h,
                   color: Colors.grey[300],
                   alignment: Alignment.center,
                   child: const SizedBox(
@@ -1362,7 +1556,7 @@ class _ImagePreview extends StatelessWidget {
                   ),
                 );
               },
-              errorBuilder: (ctx, e, s) => _brokenBox(),
+              errorBuilder: (ctx, e, s) => _brokenBox(w, h),
             ),
           )),
         ),
@@ -1371,27 +1565,171 @@ class _ImagePreview extends StatelessWidget {
 
     // Локальный файл устройства (исходящее сообщение в процессе отправки)
     final file = File(path);
-    if (!file.existsSync()) return _brokenBox();
+    if (!file.existsSync()) return _brokenBox(w, h);
     return GestureDetector(
       onTap: openViewer,
       child: Hero(
         tag: 'media_$path',
         child: frame(ClipRRect(
           borderRadius: BorderRadius.circular(10),
-          child: Image.file(file, width: 220, height: 200, fit: BoxFit.cover),
+          child: Image.file(file, width: w, height: h, fit: BoxFit.cover),
         )),
       ),
     );
   }
 
-  Widget _brokenBox() => Container(
-        width: 220, height: 100,
+  Widget _brokenBox(double w, double h) => Container(
+        width: w, height: h / 2,
         decoration: BoxDecoration(
           color: Colors.grey[300],
           borderRadius: BorderRadius.circular(10),
         ),
         child: const Icon(Icons.broken_image, color: Colors.grey),
       );
+}
+
+/// Изображение для поста канала: загружает естественные пропорции и отображает
+/// без обрезки. Портретные снимки показываются вертикально (ratio ≥ 0.45),
+/// горизонтальные — до 2.2:1. Пока размер не загружен, используется 4:3.
+class _ChannelPostImage extends StatefulWidget {
+  final Attachment attachment;
+  final List<Attachment> allMedia;
+  const _ChannelPostImage({required this.attachment, required this.allMedia});
+
+  @override
+  State<_ChannelPostImage> createState() => _ChannelPostImageState();
+}
+
+class _ChannelPostImageState extends State<_ChannelPostImage> {
+  double? _ratio;
+  ImageStreamListener? _listener;
+
+  @override
+  void initState() {
+    super.initState();
+    _resolveRatio();
+  }
+
+  void _resolveRatio() {
+    final path = widget.attachment.path;
+    final ImageProvider provider;
+    if (ApiConfig.isServerMediaPath(path)) {
+      provider = NetworkImage(ApiConfig.resolveMediaUrl(path)!);
+    } else {
+      final file = File(path);
+      if (!file.existsSync()) return;
+      provider = FileImage(file);
+    }
+    final stream = provider.resolve(const ImageConfiguration());
+    _listener = ImageStreamListener(
+      (info, _) {
+        if (mounted) {
+          setState(() {
+            _ratio = info.image.width / info.image.height;
+          });
+        }
+      },
+      onError: (_, __) {},
+    );
+    stream.addListener(_listener!);
+  }
+
+  @override
+  void dispose() {
+    // нет способа получить stream снова без провайдера, но listener GC-ится сам
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final path = widget.attachment.path;
+
+    // ── Максимальная высота изображения ────────────────────────────────────
+    // Резервируем место для: app-titlebar(32) + chat-topbar(56) + input(68)
+    //   + header поста(52) + footer поста(44) + padding(28) + запас(20) = 300 px
+    final viewportH = MediaQuery.of(context).size.height;
+    final maxImgH = (viewportH - 300).clamp(140.0, 720.0);
+
+    void openViewer() =>
+        MediaViewerScreen.open(context, widget.attachment, allMedia: widget.allMedia);
+
+    // Строим изображение (одинаково для сети и файла)
+    Widget buildImage() {
+      if (ApiConfig.isServerMediaPath(path)) {
+        final url = ApiConfig.resolveMediaUrl(path)!;
+        return Image.network(
+          url,
+          width: double.infinity,
+          fit: BoxFit.cover,
+          loadingBuilder: (ctx, child, prog) {
+            if (prog == null) return child;
+            return Container(
+              color: Colors.grey[300],
+              alignment: Alignment.center,
+              child: const SizedBox(
+                width: 28,
+                height: 28,
+                child: CircularProgressIndicator(strokeWidth: 2.5),
+              ),
+            );
+          },
+          errorBuilder: (_, __, ___) => Container(
+            color: Colors.grey[300],
+            alignment: Alignment.center,
+            child: const Icon(Icons.broken_image, color: Colors.grey),
+          ),
+        );
+      } else {
+        final file = File(path);
+        if (!file.existsSync()) {
+          return Container(
+            color: Colors.grey[300],
+            alignment: Alignment.center,
+            child: const Icon(Icons.broken_image, color: Colors.grey),
+          );
+        }
+        return Image.file(
+          file,
+          width: double.infinity,
+          fit: BoxFit.cover,
+          errorBuilder: (_, __, ___) => Container(
+            color: Colors.grey[300],
+            alignment: Alignment.center,
+            child: const Icon(Icons.broken_image, color: Colors.grey),
+          ),
+        );
+      }
+    }
+
+    return LayoutBuilder(builder: (ctx, constraints) {
+      final availW = constraints.maxWidth;
+
+      // Натуральные пропорции (пока не загружены — заглушка 4:3)
+      final naturalRatio = _ratio ?? (4 / 3);
+
+      // Высота при полной ширине с натуральными пропорциями
+      final naturalH = availW / naturalRatio;
+
+      // Ограничиваем высоту: изображение масштабируется так, чтобы весь пост
+      // вписывался во вьюпорт. Пропорции сохраняются — cover кадрирует только
+      // крайние пиксели при достижении лимита.
+      final displayH = naturalH.clamp(0.0, maxImgH);
+
+      // Пересчитываем отношение сторон от реальной ширины и ограниченной высоты
+      final displayRatio = availW / displayH;
+
+      return GestureDetector(
+        onTap: openViewer,
+        child: Hero(
+          tag: 'media_$path',
+          child: ClipRRect(
+            borderRadius: const BorderRadius.vertical(top: Radius.circular(12)),
+            child: AspectRatio(aspectRatio: displayRatio, child: buildImage()),
+          ),
+        ),
+      );
+    });
+  }
 }
 
 /// Полупрозрачный фон-рамка вокруг медиа (фото / видео) — Telegram-style.
@@ -1432,28 +1770,24 @@ class _VideoPreview extends StatelessWidget {
     return h > 0 ? '$h:$m:$s' : '$m:$s';
   }
 
-  Widget _buildBackdrop() {
+  Widget _buildBackdrop(double w, double h) {
     final thumbUrl = ApiConfig.resolveMediaUrl(attachment.thumbnailPath);
-    debugPrint('[VideoPreview] path=${attachment.thumbnailPath}  url=$thumbUrl');
     if (thumbUrl != null) {
       return Image.network(
         thumbUrl,
-        width: 220,
-        height: 160,
+        width: w,
+        height: h,
         fit: BoxFit.cover,
         gaplessPlayback: true,
-        errorBuilder: (ctx, err, stack) {
-          debugPrint('[VideoPreview] IMAGE ERROR: $err  url=$thumbUrl');
-          return _placeholderBackdrop();
-        },
+        errorBuilder: (ctx, err, stack) => _placeholderBackdrop(w, h),
       );
     }
-    return _placeholderBackdrop();
+    return _placeholderBackdrop(w, h);
   }
 
-  Widget _placeholderBackdrop() => Container(
-        width: 220,
-        height: 160,
+  Widget _placeholderBackdrop(double w, double h) => Container(
+        width: w,
+        height: h,
         color: const Color(0xFF1A1A1A),
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
@@ -1468,6 +1802,9 @@ class _VideoPreview extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
+    final isDesktop = MediaQuery.of(context).size.width > AppSizes.desktopBreakpoint;
+    final w = isDesktop ? 340.0 : 220.0;
+    final h = isDesktop ? 240.0 : 160.0;
     final dur = attachment.duration;
 
     return GestureDetector(
@@ -1481,7 +1818,7 @@ class _VideoPreview extends StatelessWidget {
             alignment: Alignment.center,
             children: [
               // ── Фоновый кадр ─────────────────────────────────────────────
-              _buildBackdrop(),
+              _buildBackdrop(w, h),
 
               // ── Кнопка Play ──────────────────────────────────────────────
               Container(
@@ -1661,9 +1998,9 @@ class _DocumentPreviewState extends State<_DocumentPreview> {
           if (canDelete)
             SimpleDialogOption(
               onPressed: () => Navigator.pop(ctx, 'open'),
-              child: const Row(
+              child: Row(
                 children: [
-                  Icon(Icons.open_in_new, size: 20, color: AppColors.primary),
+                  Icon(Icons.open_in_new, size: 20, color: Theme.of(context).colorScheme.primary),
                   SizedBox(width: 12),
                   Text('Открыть'),
                 ],
@@ -1672,9 +2009,9 @@ class _DocumentPreviewState extends State<_DocumentPreview> {
           if (canDelete)
             SimpleDialogOption(
               onPressed: () => Navigator.pop(ctx, 'share'),
-              child: const Row(
+              child: Row(
                 children: [
-                  Icon(Icons.share_outlined, size: 20, color: AppColors.primary),
+                  Icon(Icons.share_outlined, size: 20, color: Theme.of(context).colorScheme.primary),
                   SizedBox(width: 12),
                   Text('Открыть в программе…'),
                 ],
@@ -1682,9 +2019,9 @@ class _DocumentPreviewState extends State<_DocumentPreview> {
             ),
           SimpleDialogOption(
             onPressed: () => Navigator.pop(ctx, 'save'),
-            child: const Row(
+            child: Row(
               children: [
-                Icon(Icons.download, size: 20, color: AppColors.primary),
+                Icon(Icons.download, size: 20, color: Theme.of(context).colorScheme.primary),
                 SizedBox(width: 12),
                 Text('Сохранить в папку'),
               ],
@@ -1760,6 +2097,7 @@ class _DocumentPreviewState extends State<_DocumentPreview> {
       case DownloadState.failed:
         return Icon(Icons.refresh, color: color, size: size);
     }
+    return Icon(_iconForFile(widget.attachment.fileName), color: color, size: size);
   }
 
   String? _buildSubtitle() {
@@ -1882,13 +2220,14 @@ class _MediaAlbum extends StatelessWidget {
 
     return LayoutBuilder(builder: (ctx, constraints) {
       final w = constraints.maxWidth;
+      final isDesktop = MediaQuery.of(ctx).size.width > AppSizes.desktopBreakpoint;
 
       // Высоты адаптируются к ширине пузыря — как в Telegram:
       //   • «большое» фото ≈ соотношение 4:3
       //   • «маленькое» (строка) ≈ половина большого
-      final bigH  = (w * 0.75).clamp(120.0, 200.0);
-      final rowH  = (w * 0.38).clamp(80.0, 120.0);
-      final pairH = (w * 0.56).clamp(100.0, 160.0); // для N=2
+      final bigH  = (w * 0.75).clamp(120.0, isDesktop ? 340.0 : 200.0);
+      final rowH  = (w * 0.38).clamp(80.0,  isDesktop ? 200.0 : 120.0);
+      final pairH = (w * 0.56).clamp(100.0, isDesktop ? 260.0 : 160.0); // для N=2
 
       // ── 1 файл ──────────────────────────────────────────────────────────────
       if (n == 1) {
@@ -2044,6 +2383,343 @@ class _MediaAlbum extends StatelessWidget {
   }
 }
 
+// ─── Пост канала/сообщества (Telegram-style) ─────────────────────────────────
+
+/// Карточка-пост в стиле Telegram-канала: полная ширина, шапка с аватаром
+/// канала и именем, контент, нижняя панель с кнопкой комментариев.
+class ChannelPostCard extends StatefulWidget {
+  final Message message;
+  final String channelName;
+  final String? channelAvatarPath;
+
+  final bool isSelected;
+  final bool isSelectionMode;
+  final VoidCallback onLongPress;
+  final VoidCallback onTap;
+  final VoidCallback? onOpenComments;
+  final List<Attachment> allMedia;
+  final String? currentUserId;
+  final void Function(List<String>)? onVotePoll;
+  final VoidCallback? onClosePoll;
+  final bool canClosePoll;
+  final void Function(Mention)? onMentionTap;
+
+  const ChannelPostCard({
+    super.key,
+    required this.message,
+    required this.channelName,
+    this.channelAvatarPath,
+    this.isSelected = false,
+    this.isSelectionMode = false,
+    required this.onLongPress,
+    required this.onTap,
+    this.onOpenComments,
+    this.allMedia = const [],
+    this.currentUserId,
+    this.onVotePoll,
+    this.onClosePoll,
+    this.canClosePoll = false,
+    this.onMentionTap,
+  });
+
+  @override
+  State<ChannelPostCard> createState() => _ChannelPostCardState();
+}
+
+class _ChannelPostCardState extends State<ChannelPostCard> {
+  @override
+  Widget build(BuildContext context) {
+    final msg     = widget.message;
+    final isDark  = Theme.of(context).brightness == Brightness.dark;
+    final primary = Theme.of(context).colorScheme.primary;
+    final isAlbum = msg.attachments != null && msg.attachments!.length > 1;
+    final isPoll  = msg.poll != null;
+    final cardColor = isDark ? const Color(0xFF1E2128) : Colors.white;
+
+    // Поддержка серверного формата: attachment=null + attachments=[item]
+    final effectiveAttachment = msg.attachment ??
+        (!isAlbum && (msg.attachments?.length == 1)
+            ? msg.attachments!.first
+            : null);
+    final attType    = effectiveAttachment?.type;
+    final isMediaAtt = attType == AttachmentType.image ||
+        attType == AttachmentType.video;
+
+    // Карточка — полная ширина с небольшим горизонтальным отступом
+    Widget card = AnimatedContainer(
+      duration: const Duration(milliseconds: 150),
+      decoration: BoxDecoration(
+        color: widget.isSelected
+            ? primary.withValues(alpha: 0.08)
+            : cardColor,
+        borderRadius: BorderRadius.circular(14),
+        border: widget.isSelected
+            ? Border.all(color: primary.withValues(alpha: 0.35), width: 1.5)
+            : Border.all(
+                color: isDark
+                    ? Colors.white.withValues(alpha: 0.06)
+                    : Colors.black.withValues(alpha: 0.06),
+              ),
+        boxShadow: isDark
+            ? null
+            : [
+                BoxShadow(
+                  color: Colors.black.withValues(alpha: 0.06),
+                  blurRadius: 6,
+                  offset: const Offset(0, 2),
+                ),
+              ],
+      ),
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(13),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            // ── Шапка ───────────────────────────────────────────────────────
+            Padding(
+              padding: const EdgeInsets.fromLTRB(12, 10, 12, 8),
+              child: Row(
+                children: [
+                  ChatAvatar(
+                    type: ChatType.community,
+                    avatarPath: widget.channelAvatarPath,
+                    chatName: widget.channelName,
+                    radius: 14,
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      widget.channelName,
+                      style: TextStyle(
+                        fontWeight: FontWeight.w700,
+                        fontSize: 14,
+                        color: primary,
+                      ),
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                  Text(
+                    _formatPostTime(msg.time),
+                    style: TextStyle(
+                      fontSize: 11,
+                      color: isDark ? Colors.white38 : Colors.black38,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+
+            // ── Опрос ───────────────────────────────────────────────────────
+            if (isPoll) ...[
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 12),
+                child: PollCard(
+                  key: ValueKey('poll_${msg.poll!.id}'),
+                  poll: msg.poll!,
+                  isMe: false,
+                  currentUserId: widget.currentUserId,
+                  onVote: widget.onVotePoll != null
+                      ? (ids) async => widget.onVotePoll!(ids)
+                      : null,
+                  onClose: widget.onClosePoll != null
+                      ? () async => widget.onClosePoll!()
+                      : null,
+                  canClose: widget.canClosePoll,
+                ),
+              ),
+              const SizedBox(height: 8),
+
+            // ── Медиаальбом (без ограничения высоты — виджет сам считает её) ─
+            ] else if (isAlbum) ...[
+              _MediaAlbum(
+                attachments: msg.attachments!,
+                allMedia: widget.allMedia,
+                isMe: false,
+              ),
+              if (msg.text.isNotEmpty) const SizedBox(height: 4),
+
+            // ── Фото: естественные пропорции (портрет/альбом). Видео: 16:9. ──
+            ] else if (effectiveAttachment != null && isMediaAtt) ...[
+              if (effectiveAttachment.type == AttachmentType.image)
+                _ChannelPostImage(
+                  attachment: effectiveAttachment,
+                  allMedia: widget.allMedia,
+                )
+              else
+                AspectRatio(
+                  aspectRatio: 16 / 9,
+                  child: _AttachmentPreview(
+                    attachment: effectiveAttachment,
+                    isMe: false,
+                    allMedia: widget.allMedia,
+                  ),
+                ),
+              if (msg.text.isNotEmpty) const SizedBox(height: 4),
+
+            // ── Документ / аудио (с отступами) ─────────────────────────────
+            ] else if (effectiveAttachment != null) ...[
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 12),
+                child: _AttachmentPreview(
+                  attachment: effectiveAttachment,
+                  isMe: false,
+                  allMedia: widget.allMedia,
+                ),
+              ),
+              if (msg.text.isNotEmpty) const SizedBox(height: 4),
+            ],
+
+            // ── Текст ────────────────────────────────────────────────────────
+            if (msg.text.isNotEmpty)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(12, 0, 12, 10),
+                child: Text.rich(
+                  buildMentionText(
+                    msg.text,
+                    msg.mentions,
+                    baseStyle: TextStyle(
+                      fontSize: 15,
+                      color: isDark ? Colors.white : Colors.black87,
+                      height: 1.45,
+                    ),
+                    mentionColor: primary,
+                    onMentionTap: widget.onMentionTap,
+                  ),
+                ),
+              ),
+
+            // ── Нижняя панель ────────────────────────────────────────────────
+            Container(
+              decoration: BoxDecoration(
+                border: Border(
+                  top: BorderSide(
+                    color: isDark
+                        ? Colors.white.withValues(alpha: 0.06)
+                        : Colors.black.withValues(alpha: 0.05),
+                  ),
+                ),
+              ),
+              padding:
+                  const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
+              child: Row(
+                children: [
+                  InkWell(
+                    borderRadius: BorderRadius.circular(6),
+                    onTap: () {
+                      if (msg.text.isNotEmpty) Share.share(msg.text);
+                    },
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 4, vertical: 2),
+                      child: Row(children: [
+                        Icon(Icons.forward,
+                            size: 15,
+                            color: isDark ? Colors.white54 : Colors.black38),
+                        const SizedBox(width: 4),
+                        Text('Переслать',
+                            style: TextStyle(
+                                fontSize: 12,
+                                color: isDark
+                                    ? Colors.white54
+                                    : Colors.black38)),
+                      ]),
+                    ),
+                  ),
+                  const Spacer(),
+                  if (widget.onOpenComments != null)
+                    InkWell(
+                      borderRadius: BorderRadius.circular(6),
+                      onTap: widget.onOpenComments,
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 4, vertical: 2),
+                        child: Row(children: [
+                          Icon(Icons.mode_comment_outlined,
+                              size: 15, color: primary),
+                          const SizedBox(width: 4),
+                          Text(
+                            msg.comments.isEmpty
+                                ? 'Комментарии'
+                                : '${msg.comments.length}',
+                            style: TextStyle(
+                                fontSize: 12,
+                                fontWeight: FontWeight.w500,
+                                color: primary),
+                          ),
+                        ]),
+                      ),
+                    ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onTap: widget.isSelectionMode ? widget.onTap : null,
+      onLongPress: widget.isSelectionMode ? null : widget.onLongPress,
+      onSecondaryTap: widget.isSelectionMode ? null : widget.onLongPress,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 4, horizontal: 8),
+        child: LayoutBuilder(builder: (context, constraints) {
+          // Ширина поста: 60% чата на десктопе, полная ширина на мобиле.
+          // Минимум 260px, максимум 560px.
+          final postWidth = (constraints.maxWidth *
+                  (constraints.maxWidth > 600 ? 0.60 : 1.0))
+              .clamp(260.0, 560.0);
+          return Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              if (widget.isSelectionMode)
+                Padding(
+                  padding: const EdgeInsets.only(right: 8, top: 10),
+                  child: AnimatedContainer(
+                    duration: const Duration(milliseconds: 150),
+                    width: 22, height: 22,
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      color:
+                          widget.isSelected ? primary : Colors.transparent,
+                      border: Border.all(
+                        color: widget.isSelected
+                            ? primary
+                            : AppColors.subtle,
+                        width: 2,
+                      ),
+                    ),
+                    child: widget.isSelected
+                        ? const Icon(Icons.check,
+                            size: 14, color: Colors.white)
+                        : null,
+                  ),
+                ),
+              SizedBox(width: postWidth, child: card),
+            ],
+          );
+        }),
+      ),
+    );
+  }
+
+  /// Формат времени поста: сегодня → "14:32", иначе → "10 мая"
+  static String _formatPostTime(DateTime dt) {
+    final now = DateTime.now();
+    if (dt.year == now.year && dt.month == now.month && dt.day == now.day) {
+      final h = dt.hour.toString().padLeft(2, '0');
+      final m = dt.minute.toString().padLeft(2, '0');
+      return '$h:$m';
+    }
+    const months = [
+      'янв', 'фев', 'мар', 'апр', 'май', 'июн',
+      'июл', 'авг', 'сен', 'окт', 'ноя', 'дек',
+    ];
+    return '${dt.day} ${months[dt.month - 1]}';
+  }
+}
+
 // ─── Поле ввода сообщения ─────────────────────────────────────────────────────
 
 /// Панель ввода текста в нижней части экрана чата.
@@ -2060,6 +2736,10 @@ class MessageInput extends StatefulWidget {
   final VoidCallback onSend;
   final VoidCallback onAttach;
   final bool isEditing;
+  /// Нажатие на кнопку 😊 — родитель управляет панелью эмодзи/GIF.
+  final VoidCallback? onEmojiTap;
+  /// Если true — кнопка эмодзи подсвечена (панель открыта).
+  final bool emojiPanelOpen;
 
   /// Вызывается при завершении записи голосового сообщения.
   /// [path] — путь к m4a файлу, [durationMs] — длительность в мс.
@@ -2072,6 +2752,8 @@ class MessageInput extends StatefulWidget {
     required this.onAttach,
     this.isEditing = false,
     this.onSendAudio,
+    this.onEmojiTap,
+    this.emojiPanelOpen = false,
   });
 
   @override
@@ -2083,8 +2765,12 @@ class _MessageInputState extends State<MessageInput> {
 
   bool _isRecording = false;
   bool _cancelMode  = false;
-  double _slideX    = 0;   // px сдвига влево (≤ 0)
+  double _slideX    = 0;    // px сдвига влево (≤ 0)
   bool _pressing    = false; // палец нажат, но long-press ещё не сработал
+
+  // ── Закрепление записи (свайп вверх → фиксируем, отпускаем кнопку) ──────
+  bool   _locked     = false; // запись закреплена
+  double _lockSlideY = 0;     // px сдвига вверх (≤ 0, ≥ -60)
 
   Timer? _recordTimer;
   int   _recordedSeconds = 0;
@@ -2145,23 +2831,46 @@ class _MessageInputState extends State<MessageInput> {
     _recordTimer = Timer.periodic(const Duration(seconds: 1), (_) {
       if (mounted) setState(() => _recordedSeconds++);
     });
-    setState(() { _isRecording = true; _cancelMode = false; _slideX = 0; });
+    setState(() {
+      _isRecording = true;
+      _cancelMode  = false;
+      _slideX      = 0;
+      _locked      = false;
+      _lockSlideY  = 0;
+    });
   }
 
   void _onLongPressMoveUpdate(LongPressMoveUpdateDetails d) {
-    if (!_isRecording) return;
+    if (!_isRecording || _locked) return;
+    final dx = d.offsetFromOrigin.dx.clamp(-160.0, 0.0);
+    final dy = d.offsetFromOrigin.dy; // отрицательное = вверх
+
+    // Свайп вверх на 60 px → закрепляем запись
+    if (dy < -60) {
+      setState(() {
+        _locked     = true;
+        _lockSlideY = 0;
+        _cancelMode = false;
+        _slideX     = 0;
+      });
+      return;
+    }
     setState(() {
-      _slideX    = d.offsetFromOrigin.dx.clamp(-160.0, 0.0);
+      _lockSlideY = dy.clamp(-60.0, 0.0);
+      _slideX     = dx;
       _cancelMode = _slideX < -72;
     });
   }
 
-  Future<void> _onLongPressEnd(LongPressEndDetails _) =>
-      _finish(cancel: _cancelMode);
+  /// Отпускание кнопки — если запись закреплена, продолжаем; иначе завершаем.
+  Future<void> _onLongPressEnd(LongPressEndDetails _) async {
+    if (_locked) return; // продолжаем запись
+    await _finish(cancel: _cancelMode);
+  }
 
   Future<void> _onLongPressCancel() async {
     setState(() => _pressing = false);
-    if (_isRecording) await _finish(cancel: true);
+    if (_isRecording && !_locked) await _finish(cancel: true);
   }
 
   Future<void> _finish({required bool cancel}) async {
@@ -2180,18 +2889,18 @@ class _MessageInputState extends State<MessageInput> {
       // Сбрасываем UI в любом случае — даже если выброшено исключение,
       // чтобы пользователь не застрял в режиме записи.
       if (mounted) {
-        setState(() { _isRecording = false; _cancelMode = false; _slideX = 0; });
+        setState(() {
+          _isRecording = false;
+          _cancelMode  = false;
+          _slideX      = 0;
+          _locked      = false;
+          _lockSlideY  = 0;
+        });
       }
     }
   }
 
-  void _showMicError() => ScaffoldMessenger.of(context).showSnackBar(
-    const SnackBar(
-      content: Text('Нет доступа к микрофону'),
-      backgroundColor: Colors.red,
-      behavior: SnackBarBehavior.floating,
-    ),
-  );
+  void _showMicError() =>   AppSnack.error(context, 'Нет доступа к микрофону');
 
   // ── Build ─────────────────────────────────────────────────────────────────
 
@@ -2242,6 +2951,7 @@ class _MessageInputState extends State<MessageInput> {
                       recordTime: _recordTime,
                       slideX: _slideX,
                       cancelMode: _cancelMode,
+                      locked: _locked,
                     )
                   : Focus(
                       // Ctrl+Enter → новая строка; Enter → отправить.
@@ -2271,18 +2981,43 @@ class _MessageInputState extends State<MessageInput> {
                         );
                         return KeyEventResult.handled;
                       },
-                      child: TextField(
-                        controller: widget.controller,
-                        onSubmitted: (_) => widget.onSend(),
-                        textInputAction: TextInputAction.send,
-                        maxLines: null,
-                        minLines: 1,
-                        decoration: const InputDecoration(
-                          hintText: 'Сообщение',
-                          border: InputBorder.none,
-                          isDense: true,
-                          contentPadding: EdgeInsets.symmetric(vertical: 10),
-                        ),
+                      child: Row(
+                        crossAxisAlignment: CrossAxisAlignment.end,
+                        children: [
+                          Expanded(
+                            child: TextField(
+                              controller: widget.controller,
+                              onSubmitted: (_) => widget.onSend(),
+                              textInputAction: TextInputAction.send,
+                              maxLines: null,
+                              minLines: 1,
+                              decoration: const InputDecoration(
+                                hintText: 'Сообщение',
+                                border: InputBorder.none,
+                                isDense: true,
+                                contentPadding:
+                                    EdgeInsets.symmetric(vertical: 10),
+                              ),
+                            ),
+                          ),
+                          // Кнопка эмодзи / GIF
+                          if (widget.onEmojiTap != null)
+                            GestureDetector(
+                              onTap: widget.onEmojiTap,
+                              child: Padding(
+                                padding: const EdgeInsets.fromLTRB(4, 0, 2, 8),
+                                child: Text(
+                                  '😊',
+                                  style: TextStyle(
+                                    fontSize: 20,
+                                    color: widget.emojiPanelOpen
+                                        ? Theme.of(context).colorScheme.primary
+                                        : null,
+                                  ),
+                                ),
+                              ),
+                            ),
+                        ],
                       ),
                     ),
             ),
@@ -2298,7 +3033,7 @@ class _MessageInputState extends State<MessageInput> {
           if (_showSendBtn)
             // Обычная кнопка — без long-press, без задержки
             CircleAvatar(
-              backgroundColor: AppColors.primary,
+              backgroundColor: Theme.of(context).extension<CustomChatTheme>()?.sendButtonColor ?? Theme.of(context).colorScheme.primary,
               child: IconButton(
                 icon: Icon(
                   widget.isEditing ? Icons.check : Icons.send,
@@ -2308,34 +3043,69 @@ class _MessageInputState extends State<MessageInput> {
                 onPressed: widget.onSend,
               ),
             )
-          else
-            // Кнопка микрофона — остаётся в дереве ВСЁ время записи
+          else if (_isRecording && _locked)
+            // ── LOCKED: кнопка «Отправить» ─────────────────────────────────
             GestureDetector(
-              onTapDown:         (_) => setState(() => _pressing = true),
-              onTapUp:           (_) => setState(() => _pressing = false),
-              onTapCancel:       ()  => setState(() => _pressing = false),
-              onTap:             ()  => setState(() => _pressing = false),
-              onLongPressStart:       _onLongPressStart,
-              onLongPressMoveUpdate:  _onLongPressMoveUpdate,
-              onLongPressEnd:         _onLongPressEnd,
-              onLongPressCancel:      _onLongPressCancel,
+              onTap: () => _finish(cancel: false),
               child: AnimatedContainer(
-                duration: const Duration(milliseconds: 120),
+                duration: const Duration(milliseconds: 150),
                 width: 48, height: 48,
-                decoration: BoxDecoration(
+                decoration: const BoxDecoration(
                   shape: BoxShape.circle,
-                  color: _isRecording
-                      ? (_cancelMode ? Colors.red : Colors.red.shade400)
-                      : (_pressing
-                          ? AppColors.primary.withAlpha(200)
-                          : AppColors.primary),
+                  color: Colors.red,
                 ),
-                child: Icon(
-                  Icons.mic,
-                  color: Colors.white,
-                  size: _isRecording ? 26 : 22,
-                ),
+                child: const Icon(Icons.send_rounded, color: Colors.white, size: 22),
               ),
+            )
+          else
+            // ── Кнопка микрофона + замок над ней ───────────────────────────
+            // Остаётся в дереве ВСЁ время жеста (иначе Flutter прерывает long-press).
+            Stack(
+              clipBehavior: Clip.none,
+              alignment: Alignment.center,
+              children: [
+                GestureDetector(
+                  onTapDown:        (_) => setState(() => _pressing = true),
+                  onTapUp:          (_) => setState(() => _pressing = false),
+                  onTapCancel:      ()  => setState(() => _pressing = false),
+                  onTap:            ()  => setState(() => _pressing = false),
+                  onLongPressStart:      _onLongPressStart,
+                  onLongPressMoveUpdate: _onLongPressMoveUpdate,
+                  onLongPressEnd:        _onLongPressEnd,
+                  onLongPressCancel:     _onLongPressCancel,
+                  child: AnimatedContainer(
+                    duration: const Duration(milliseconds: 120),
+                    width: 48, height: 48,
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      color: _isRecording
+                          ? (_cancelMode
+                              ? Colors.red
+                              : Colors.red.shade400)
+                          : (_pressing
+                              ? (Theme.of(context).extension<CustomChatTheme>()?.sendButtonColor
+                                    ?? Theme.of(context).colorScheme.primary)
+                                  .withAlpha(200)
+                              : (Theme.of(context).extension<CustomChatTheme>()?.sendButtonColor
+                                    ?? Theme.of(context).colorScheme.primary)),
+                    ),
+                    child: Icon(
+                      Icons.mic,
+                      color: Colors.white,
+                      size: _isRecording ? 26 : 22,
+                    ),
+                  ),
+                ),
+
+                // Иконка замка — появляется при начале записи
+                if (_isRecording)
+                  Positioned(
+                    bottom: 54 + (-_lockSlideY * 0.5),
+                    child: _LockIndicator(
+                      progress: (-_lockSlideY / 60).clamp(0.0, 1.0),
+                    ),
+                  ),
+              ],
             ),
         ],
       ),
@@ -2345,57 +3115,173 @@ class _MessageInputState extends State<MessageInput> {
 
 // ─── Контент внутри поля во время записи ────────────────────────────────────
 
-class _RecordingContent extends StatelessWidget {
+class _RecordingContent extends StatefulWidget {
   final String recordTime;
   final double slideX;
   final bool   cancelMode;
+  final bool   locked;
 
   const _RecordingContent({
     required this.recordTime,
     required this.slideX,
     required this.cancelMode,
+    required this.locked,
   });
 
   @override
+  State<_RecordingContent> createState() => _RecordingContentState();
+}
+
+class _RecordingContentState extends State<_RecordingContent> {
+  // Кольцевой буфер амплитуд — последние 40 отсчётов (обновляются каждые 100 мс)
+  final _amps = List<double>.filled(40, 0.0);
+  StreamSubscription<double>? _ampSub;
+
+  @override
+  void initState() {
+    super.initState();
+    _ampSub = AudioService.instance.onAmplitude.listen((v) {
+      if (!mounted) return;
+      setState(() {
+        _amps.removeAt(0);
+        _amps.add(v);
+      });
+    });
+  }
+
+  @override
+  void dispose() {
+    _ampSub?.cancel();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
-    final cancelProgress = (-slideX / 72).clamp(0.0, 1.0);
-    final hintColor = Color.lerp(AppColors.subtle, Colors.red, cancelProgress)!;
+    final primary = Theme.of(context).colorScheme.primary;
+    final cancelProg = widget.locked
+        ? 0.0
+        : (-widget.slideX / 72).clamp(0.0, 1.0);
+    final hintColor =
+        Color.lerp(AppColors.subtle, Colors.red, cancelProg)!;
 
     return SizedBox(
       height: 40,
       child: Row(
         children: [
+          // Мигающая точка
           const _RecordingDot(),
           const SizedBox(width: 8),
-          // Таймер записи
+
+          // Таймер
           Text(
-            recordTime,
-            style: const TextStyle(
-              fontSize: 15,
-              fontWeight: FontWeight.w500,
-            ),
+            widget.recordTime,
+            style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w500),
           ),
-          // Подсказка «свайп влево» — сдвигается вместе с пальцем
+          const SizedBox(width: 10),
+
+          // Осциллограмма
           Expanded(
-            child: Transform.translate(
-              offset: Offset(slideX * 0.35, 0),
+            child: _WaveformBars(amplitudes: _amps, color: primary),
+          ),
+
+          // Правая часть: замок или подсказка отмены
+          if (widget.locked)
+            Padding(
+              padding: const EdgeInsets.only(right: 2),
+              child: Icon(Icons.lock_rounded, size: 15, color: primary),
+            )
+          else
+            Transform.translate(
+              offset: Offset(widget.slideX * 0.30, 0),
               child: Row(
-                mainAxisAlignment: MainAxisAlignment.center,
+                mainAxisSize: MainAxisSize.min,
                 children: [
-                  Icon(Icons.chevron_left, color: hintColor, size: 16),
-                  const SizedBox(width: 2),
-                  Flexible(
-                    child: Text(
-                      cancelMode ? 'Отпустите для отмены' : 'Свайп влево — отмена',
-                      style: TextStyle(fontSize: 12, color: hintColor),
-                      overflow: TextOverflow.ellipsis,
-                    ),
+                  Icon(Icons.chevron_left, color: hintColor, size: 15),
+                  Text(
+                    widget.cancelMode ? 'Отпустить — отмена' : 'Отмена',
+                    style: TextStyle(fontSize: 11, color: hintColor),
+                    overflow: TextOverflow.ellipsis,
                   ),
                 ],
               ),
             ),
+        ],
+      ),
+    );
+  }
+}
+
+// ─── Осциллограмма записи ────────────────────────────────────────────────────
+
+class _WaveformBars extends StatelessWidget {
+  final List<double> amplitudes;
+  final Color color;
+
+  const _WaveformBars({required this.amplitudes, required this.color});
+
+  @override
+  Widget build(BuildContext context) {
+    return LayoutBuilder(builder: (ctx, constraints) {
+      const barW = 2.5;
+      const gap  = 1.5;
+      final maxBars = (constraints.maxWidth / (barW + gap)).floor().clamp(1, amplitudes.length);
+      final visible = amplitudes.skip(amplitudes.length - maxBars).toList();
+      final n = visible.length;
+
+      return Row(
+        mainAxisAlignment: MainAxisAlignment.end,
+        crossAxisAlignment: CrossAxisAlignment.center,
+        children: List.generate(n, (i) {
+          final amp = visible[i];
+          final age  = (n - 1 - i) / n; // 0 = newest, 1 = oldest
+          final h    = (amp * 30 + 3).clamp(3.0, 32.0);
+          return Container(
+            width: barW,
+            height: h,
+            margin: const EdgeInsets.symmetric(horizontal: gap / 2),
+            decoration: BoxDecoration(
+              color: color.withValues(alpha: 0.25 + 0.75 * (1 - age)),
+              borderRadius: BorderRadius.circular(1.5),
+            ),
+          );
+        }),
+      );
+    });
+  }
+}
+
+// ─── Индикатор замка над кнопкой микрофона ───────────────────────────────────
+
+class _LockIndicator extends StatelessWidget {
+  /// 0.0 = открыт (свайп не начат), 1.0 = закрыт (порог достигнут)
+  final double progress;
+
+  const _LockIndicator({required this.progress});
+
+  @override
+  Widget build(BuildContext context) {
+    final primary  = Theme.of(context).colorScheme.primary;
+    final cardColor = Theme.of(context).cardColor;
+    final locked   = progress > 0.85;
+
+    return AnimatedContainer(
+      duration: const Duration(milliseconds: 120),
+      width: 34, height: 34,
+      decoration: BoxDecoration(
+        shape: BoxShape.circle,
+        color: locked ? primary : cardColor,
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.20),
+            blurRadius: 8,
+            offset: const Offset(0, 2),
           ),
         ],
+      ),
+      child: Icon(
+        locked ? Icons.lock_rounded : Icons.lock_open_rounded,
+        size: 16,
+        color: locked ? Colors.white : AppColors.subtle,
       ),
     );
   }
@@ -2457,7 +3343,7 @@ class _EditingIndicator extends StatelessWidget {
             width: 3,
             height: 36,
             decoration: BoxDecoration(
-              color: AppColors.primary,
+              color: Theme.of(context).colorScheme.primary,
               borderRadius: BorderRadius.circular(2),
             ),
           ),
@@ -2467,10 +3353,10 @@ class _EditingIndicator extends StatelessWidget {
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                const Text(
+                Text(
                   'Редактирование',
                   style: TextStyle(
-                    color: AppColors.primary,
+                    color: Theme.of(context).colorScheme.primary,
                     fontSize: 13,
                     fontWeight: FontWeight.w600,
                   ),
@@ -3025,7 +3911,7 @@ class _MediaViewerScreenState extends State<MediaViewerScreen>
             fit: BoxFit.contain,
             loadingBuilder: (ctx, child, p) => p == null
                 ? child
-                : const Center(child: CircularProgressIndicator(color: AppColors.primary)),
+                : Center(child: CircularProgressIndicator(color: Theme.of(context).colorScheme.primary)),
             errorBuilder: (ctx, e, s) =>
                 const Icon(Icons.broken_image, color: Colors.white38, size: 64),
           )
@@ -3095,8 +3981,8 @@ class _MediaViewerScreenState extends State<MediaViewerScreen>
             Image.network(thumbUrl, fit: BoxFit.cover, gaplessPlayback: true)
           else
             const ColoredBox(color: Colors.black),
-          const Center(
-            child: CircularProgressIndicator(color: AppColors.primary),
+          Center(
+            child: CircularProgressIndicator(color: Theme.of(context).colorScheme.primary),
           ),
         ],
       );
@@ -3314,10 +4200,10 @@ class _MediaViewerScreenState extends State<MediaViewerScreen>
             thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 6),
             overlayShape: const RoundSliderOverlayShape(overlayRadius: 10),
             trackHeight: 3,
-            activeTrackColor: AppColors.primary,
+            activeTrackColor: Theme.of(context).colorScheme.primary,
             inactiveTrackColor: Colors.transparent,
-            thumbColor: AppColors.primary,
-            overlayColor: AppColors.primary.withValues(alpha: 0.2),
+            thumbColor: Theme.of(context).colorScheme.primary,
+            overlayColor: Theme.of(context).colorScheme.primary.withValues(alpha: 0.2),
           ),
           child: Slider(
             value: sliderVal,
@@ -3407,7 +4293,7 @@ class _MediaViewerScreenState extends State<MediaViewerScreen>
               decoration: BoxDecoration(
                 borderRadius: BorderRadius.circular(6),
                 border: selected
-                    ? Border.all(color: AppColors.primary, width: 2)
+                    ? Border.all(color: Theme.of(context).colorScheme.primary, width: 2)
                     : null,
               ),
               child: ClipRRect(
@@ -3573,7 +4459,7 @@ class _CommentsSheetContentState extends State<_CommentsSheetContent> {
           padding: const EdgeInsets.symmetric(horizontal: 16),
           child: Row(
             children: [
-              const Icon(Icons.mode_comment_outlined, size: 18, color: AppColors.primary),
+              Icon(Icons.mode_comment_outlined, size: 18, color: Theme.of(context).colorScheme.primary),
               const SizedBox(width: 8),
               Text(
                 'Комментарии (${comments.length})',
@@ -3624,8 +4510,8 @@ class _CommentsSheetContentState extends State<_CommentsSheetContent> {
                           CircleAvatar(
                             radius: 16,
                             backgroundColor: c.isMe
-                                ? AppColors.primary
-                                : AppColors.primary.withValues(alpha: 0.2),
+                                ? Theme.of(context).colorScheme.primary
+                                : Theme.of(context).colorScheme.primary.withValues(alpha: 0.2),
                             child: Text(
                               c.senderName.isNotEmpty
                                   ? c.senderName[0]
@@ -3635,7 +4521,7 @@ class _CommentsSheetContentState extends State<_CommentsSheetContent> {
                                 fontWeight: FontWeight.bold,
                                 color: c.isMe
                                     ? Colors.white
-                                    : AppColors.primary,
+                                    : Theme.of(context).colorScheme.primary,
                               ),
                             ),
                           ),
@@ -3647,7 +4533,7 @@ class _CommentsSheetContentState extends State<_CommentsSheetContent> {
                                   12, 8, 12, 6),
                               decoration: BoxDecoration(
                                 color: c.isMe
-                                    ? AppColors.primary
+                                    ? Theme.of(context).colorScheme.primary
                                         .withValues(alpha: 0.15)
                                     : isDark
                                         ? Colors.white
@@ -3735,7 +4621,7 @@ class _CommentsSheetContentState extends State<_CommentsSheetContent> {
                 ),
                 const SizedBox(width: 4),
                 IconButton(
-                  icon: const Icon(Icons.send, color: AppColors.primary),
+                  icon: Icon(Icons.send, color: Theme.of(context).colorScheme.primary),
                   onPressed: _send,
                 ),
               ],
@@ -3743,6 +4629,167 @@ class _CommentsSheetContentState extends State<_CommentsSheetContent> {
           ),
         ),
       ],
+    );
+  }
+}
+
+// ─── Карточка-приглашение в группу (Discord-style) ──────────────────────────
+
+class _GroupInviteCard extends StatefulWidget {
+  final GroupInvite invite;
+  final bool isMe;
+  /// null — кнопка «Принять» недоступна (не передан колбэк).
+  final VoidCallback? onAccept;
+
+  const _GroupInviteCard({
+    required this.invite,
+    required this.isMe,
+    this.onAccept,
+  });
+
+  @override
+  State<_GroupInviteCard> createState() => _GroupInviteCardState();
+}
+
+class _GroupInviteCardState extends State<_GroupInviteCard> {
+  bool _joining = false;
+
+  Future<void> _handleAccept() async {
+    if (widget.onAccept == null || _joining) return;
+    setState(() => _joining = true);
+    try {
+      widget.onAccept!();
+    } finally {
+      if (mounted) setState(() => _joining = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final invite = widget.invite;
+    final isMe = widget.isMe;
+
+    final typeLabel = switch (invite.chatType) {
+      ChatType.community => 'Сообщество',
+      ChatType.group     => 'Группа',
+      _                  => 'Группа',
+    };
+
+    // Цвета адаптируются под сторону пузыря
+    final borderColor = isMe
+        ? Colors.white.withValues(alpha: 0.25)
+        : theme.colorScheme.outline.withValues(alpha: 0.35);
+    final nameColor   = isMe ? Colors.white        : theme.colorScheme.onSurface;
+    final metaColor   = isMe ? Colors.white60      : theme.hintColor;
+
+    return Container(
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: borderColor, width: 1),
+        color: isMe
+            ? Colors.black.withValues(alpha: 0.12)
+            : theme.colorScheme.surfaceContainerHighest.withValues(alpha: 0.55),
+      ),
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+      child: Row(
+        // mainAxisSize.max — пузырь имеет фиксированную ширину, Flexible корректно
+        // получает оставшееся пространство. mainAxisSize.min здесь нельзя использовать
+        // т.к. IntrinsicWidth посчитает ширину без Flexible-столбца и текст исчезнет.
+        children: [
+          // ── Аватар ────────────────────────────────────
+          ChatAvatar(
+            type: invite.chatType,
+            radius: 18,
+            avatarPath: invite.avatarPath,
+            chatName: invite.chatName,
+          ),
+          const SizedBox(width: 9),
+          // ── Название + мета ───────────────────────────
+          Flexible(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  invite.chatName,
+                  style: TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w600,
+                    color: nameColor,
+                    height: 1.2,
+                  ),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  '$typeLabel · ${invite.memberCount} уч.',
+                  style: TextStyle(fontSize: 11, color: metaColor, height: 1.2),
+                ),
+              ],
+            ),
+          ),
+          // ── Кнопка «Вступить» (только у получателя) ──
+          if (!isMe) ...[
+            const SizedBox(width: 10),
+            _JoinPill(joining: _joining, onTap: _handleAccept),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+/// Компактная пилюля «Вступить →» / индикатор загрузки.
+class _JoinPill extends StatelessWidget {
+  final bool joining;
+  final VoidCallback onTap;
+
+  const _JoinPill({required this.joining, required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    final primary = Theme.of(context).colorScheme.primary;
+    return GestureDetector(
+      onTap: joining ? null : onTap,
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 150),
+        height: 28,
+        padding: const EdgeInsets.symmetric(horizontal: 10),
+        decoration: BoxDecoration(
+          color: joining
+              ? primary.withValues(alpha: 0.4)
+              : primary,
+          borderRadius: BorderRadius.circular(14),
+        ),
+        alignment: Alignment.center,
+        child: joining
+            ? const SizedBox(
+                width: 13,
+                height: 13,
+                child: CircularProgressIndicator(
+                  strokeWidth: 2,
+                  color: Colors.white,
+                ),
+              )
+            : const Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    'Вступить',
+                    style: TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w600,
+                      color: Colors.white,
+                      height: 1,
+                    ),
+                  ),
+                  SizedBox(width: 3),
+                  Icon(Icons.arrow_forward_rounded, size: 12, color: Colors.white),
+                ],
+              ),
+      ),
     );
   }
 }

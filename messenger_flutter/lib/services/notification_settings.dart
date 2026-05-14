@@ -10,6 +10,14 @@ class NotificationSettings {
   static const _vibration    = 'notif_vibration_enabled';
   static const _mutePrefix   = 'notif_mute_chat_';
 
+  // Category toggles
+  static const _chats       = 'notif_chats_enabled';
+  static const _groups      = 'notif_groups_enabled';
+  static const _communities = 'notif_communities_enabled';
+  static const _news        = 'notif_news_enabled';
+  static const _calls       = 'notif_calls_enabled';
+  static const _preview     = 'notif_preview_enabled';
+
   // ── Sound ──────────────────────────────────────────────────────────────────
 
   Future<bool> getSoundEnabled() async {
@@ -33,6 +41,38 @@ class NotificationSettings {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool(_vibration, value);
   }
+
+  // ── Categories ────────────────────────────────────────────────────────────
+
+  Future<bool> getChatsEnabled() async =>
+      (await SharedPreferences.getInstance()).getBool(_chats) ?? true;
+  Future<void> setChatsEnabled(bool v) async =>
+      (await SharedPreferences.getInstance()).setBool(_chats, v);
+
+  Future<bool> getGroupsEnabled() async =>
+      (await SharedPreferences.getInstance()).getBool(_groups) ?? true;
+  Future<void> setGroupsEnabled(bool v) async =>
+      (await SharedPreferences.getInstance()).setBool(_groups, v);
+
+  Future<bool> getCommunitiesEnabled() async =>
+      (await SharedPreferences.getInstance()).getBool(_communities) ?? true;
+  Future<void> setCommunitiesEnabled(bool v) async =>
+      (await SharedPreferences.getInstance()).setBool(_communities, v);
+
+  Future<bool> getNewsEnabled() async =>
+      (await SharedPreferences.getInstance()).getBool(_news) ?? true;
+  Future<void> setNewsEnabled(bool v) async =>
+      (await SharedPreferences.getInstance()).setBool(_news, v);
+
+  Future<bool> getCallsEnabled() async =>
+      (await SharedPreferences.getInstance()).getBool(_calls) ?? true;
+  Future<void> setCallsEnabled(bool v) async =>
+      (await SharedPreferences.getInstance()).setBool(_calls, v);
+
+  Future<bool> getPreviewEnabled() async =>
+      (await SharedPreferences.getInstance()).getBool(_preview) ?? true;
+  Future<void> setPreviewEnabled(bool v) async =>
+      (await SharedPreferences.getInstance()).setBool(_preview, v);
 
   // ── Per-chat mute ─────────────────────────────────────────────────────────
 

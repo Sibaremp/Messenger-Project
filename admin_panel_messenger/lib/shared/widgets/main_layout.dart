@@ -42,6 +42,12 @@ class _Sidebar extends ConsumerWidget {
           const _SidebarHeader(),
           const SizedBox(height: 8),
           _NavItem(
+            icon: Icons.dashboard_outlined,
+            label: 'Главная',
+            path: '/dashboard',
+            active: location.startsWith('/dashboard'),
+          ),
+          _NavItem(
             icon: Icons.people_alt_outlined,
             label: 'Участники',
             path: '/people',
@@ -73,7 +79,7 @@ class _Sidebar extends ConsumerWidget {
           ),
           _NavItem(
             icon: Icons.upload_file_outlined,
-            label: 'Импорт',
+            label: 'Импорт участников',
             path: '/import',
             active: location.startsWith('/import'),
           ),
@@ -96,17 +102,13 @@ class _SidebarHeader extends StatelessWidget {
       padding: const EdgeInsets.fromLTRB(20, 24, 20, 20),
       child: Row(
         children: [
-          Container(
-            width: 38,
-            height: 38,
-            decoration: BoxDecoration(
-              color: const Color(0xFF2563EB),
-              borderRadius: BorderRadius.circular(10),
-            ),
-            child: const Icon(
-              Icons.admin_panel_settings_rounded,
-              color: Colors.white,
-              size: 22,
+          ClipRRect(
+            borderRadius: BorderRadius.circular(8),
+            child: Image.asset(
+              'assets/images/logo.png',
+              width: 38,
+              height: 38,
+              fit: BoxFit.contain,
             ),
           ),
           const SizedBox(width: 12),

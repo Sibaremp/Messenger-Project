@@ -6,6 +6,9 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show Clipboard, ClipboardData;
 import 'package:image_picker/image_picker.dart';
 import 'package:file_picker/file_picker.dart';
+import 'package:media_kit/media_kit.dart' show Player, Media;
+import 'package:media_kit_video/media_kit_video.dart' show VideoController, Video, NoVideoControls;
+import 'package:video_player/video_player.dart';
 import '../models.dart';
 import '../services/audio_player_service.dart' show AudioPlayerService;
 import '../app_constants.dart';
@@ -13,12 +16,18 @@ import '../services/api_config.dart' show ApiConfig;
 import '../services/chat_service.dart';
 import '../services/signaling_service.dart';
 import '../widgets/chat_widgets.dart';
+import '../widgets/member_picker.dart';
+import '../widgets/emoji_gif_panel.dart';
+import '../services/local_cache_service.dart';
+import '../profile_screen.dart' show ProfileAvatar;
 import '../services/auth_service.dart' as svc;
 import 'comments_screen.dart';
 import '../utils/profanity_filter.dart';
 import 'contact_profile_screen.dart';
 import 'group_profile_screen.dart';
 import 'call_screen.dart';
+import '../theme.dart' show CustomChatTheme;
+import '../utils/app_snack.dart';
 
 // ── Элементы плоского списка (разделитель дат + сообщение) ───────────────────
 
@@ -49,6 +58,10 @@ class ChatScreen extends StatefulWidget {
   final svc.AuthService? auth;
   /// Когда передан — в AppBar появляются кнопки аудио/видео звонка.
   final SignalingService? signalingService;
+  /// Вызывается вместо Navigator.push когда нужно открыть личный чат из группы
+  /// (только в embedded/desktop-режиме). Responsive shell использует это чтобы
+  /// переключить панель на нужный чат, не ломая 3-колоночный лейаут.
+  final ValueChanged<Chat>? onOpenDirectChat;
 
   const ChatScreen({
     super.key,
@@ -59,6 +72,7 @@ class ChatScreen extends StatefulWidget {
     this.embedded = false,
     this.auth,
     this.signalingService,
+    this.onOpenDirectChat,
   });
 
   @override
@@ -95,11 +109,67 @@ class _ChatScreenState extends State<ChatScreen> {
   // ── Закреплённые сообщения ────────────────────────────
   /// Индекс текущего закреплённого сообщения в баре (цикличный).
   int _pinnedBarIndex = 0;
+
+  // ── Панель эмодзи / GIF ───────────────────────────────
+  bool _showEmojiPanel = false;
+
+  /// Для личных чатов — ФИО из списка контактов (если есть),
+  /// иначе из участников чата, иначе логин.
+  String get _contactDisplayName {
+    if (_currentChat.type != ChatType.direct) return _currentChat.name;
+    final contactName = widget.contacts
+        .where((c) => c.name == _currentChat.name)
+        .firstOrNull
+        ?.bestName;
+    if (contactName != null) return contactName;
+    // Фоллбэк — displayName из участников чата (сервер передаёт его для личных чатов)
+    final memberName = _currentChat.members
+        .where((m) => m.name == _currentChat.name)
+        .firstOrNull
+        ?.displayName;
+    return memberName ?? _currentChat.name;
+  }
+
+  /// Логин собеседника (для передачи в профиль как username — показывается под ФИО).
+  String? get _contactUsername {
+    if (_currentChat.type != ChatType.direct) return null;
+    // Есть ФИО из контактов?
+    final contact = widget.contacts
+        .where((c) => c.name == _currentChat.name)
+        .firstOrNull;
+    if (contact?.displayName != null) return _currentChat.name;
+    // Есть ФИО из участников чата?
+    final member = _currentChat.members
+        .where((m) => m.name == _currentChat.name)
+        .firstOrNull;
+    if (member?.displayName != null) return _currentChat.name;
+    return null;
+  }
   /// Ключи для GlobalKey-прокрутки к конкретному сообщению.
   final Map<String, GlobalKey> _itemKeys = {};
 
   // ── Панель вложений ──────────────────────────────────
   bool _attachMenuOpen = false;
+
+  // ── Режим публикации в сообществе ────────────────────
+  /// true — публикуем от имени канала, false — от своего имени
+  bool _postAsCommunity = true;
+
+  // ── Toast цензуры ─────────────────────────────────────
+  bool _censorToastVisible = false;
+  String _censorToastMsg = '';
+  Timer? _censorTimer;
+
+  void _showCensorToast(String message) {
+    _censorTimer?.cancel();
+    setState(() {
+      _censorToastMsg = message;
+      _censorToastVisible = true;
+    });
+    _censorTimer = Timer(const Duration(seconds: 4), () {
+      if (mounted) setState(() => _censorToastVisible = false);
+    });
+  }
 
   // ── @упоминания ───────────────────────────────────────
   /// Поисковый запрос после '@' (null — пикер не показывается).
@@ -119,16 +189,24 @@ class _ChatScreenState extends State<ChatScreen> {
     _setMessages(widget.chat.messages);
     _loadAvatar();
     _controller.addListener(_onTextChanged);
+    // Если сервер ещё не прислал сообщения — показываем кэш немедленно.
+    if (widget.chat.messages.isEmpty) {
+      LocalCacheService.instance.loadMessages(widget.chat.id).then((cached) {
+        if (cached != null && cached.isNotEmpty && mounted && _messages.isEmpty) {
+          setState(() => _setMessages(cached));
+        }
+      });
+    }
     // Подписка на события от сервера — чтобы новые сообщения, правки
     // и удаления сразу появлялись в открытом чате без повторного входа.
     _eventSub = widget.service.events.listen(_onChatEvent);
-    // Отмечаем все чужие сообщения прочитанными при входе в чат — это
-    // сработает только в ApiChatService после того, как SignalR подключится,
-    // но это нормально: безопасный повтор на сервере (read-status уже есть).
-    _markAllUnreadRead();
-    // Прокрутить к последнему сообщению после отрисовки первого кадра.
+    // Отмечаем все чужие сообщения прочитанными при входе в чат.
+    // ВАЖНО: откладываем на postFrameCallback, чтобы не вызвать setState()
+    // на родителе (_ChatListScreenState) в момент его же build-фазы.
+    // Это предотвращает исключение "setState() called during build".
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
+      _markAllUnreadRead();
       if (_scrollController.hasClients) {
         _scrollController.jumpTo(_scrollController.position.maxScrollExtent);
       }
@@ -143,6 +221,11 @@ class _ChatScreenState extends State<ChatScreen> {
         .where((m) => !m.isMe && m.status != MessageStatus.read)
         .map((m) => m.id)
         .toList();
+    // Обнуляем счётчик непрочитанных немедленно — shell обновит бейдж на сайдбаре
+    // без ожидания ответа сервера или перезагрузки всего списка чатов.
+    if (_currentChat.unreadCount != 0) {
+      widget.onChatUpdated(_currentChat.copyWith(unreadCount: 0));
+    }
     if (ids.isEmpty) return;
     // Запуск без await — это фоновая операция, не должна блокировать UI
     // и падения хаба (например, во время переподключения) не должны
@@ -289,6 +372,8 @@ class _ChatScreenState extends State<ChatScreen> {
 
   // ── Отправка или сохранение правки ────────────────────
   void _sendOrEdit({Attachment? attachment}) {
+    // Закрываем панель эмодзи при отправке
+    if (_showEmojiPanel) setState(() => _showEmojiPanel = false);
     if (_editingMessage != null) {
       _saveEdit();
     } else {
@@ -307,11 +392,7 @@ class _ChatScreenState extends State<ChatScreen> {
         : rawText;
     // Уведомляем пользователя, если текст был изменён.
     if (_currentChat.isAcademic && text != rawText && mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-        content: Text('Сообщение содержало недопустимые слова и было автоматически отредактировано.'),
-        duration: Duration(seconds: 3),
-        behavior: SnackBarBehavior.floating,
-      ));
+      _showCensorToast('Сообщение содержало недопустимые слова и было автоматически отредактировано.');
     }
 
     final reply = _replyingTo != null
@@ -351,6 +432,7 @@ class _ChatScreenState extends State<ChatScreen> {
         attachments: attachments,
         replyTo: reply,
         mentions: capturedMentions,
+        postAsCommunity: _currentChat.type == ChatType.community && _postAsCommunity,
       );
       if (!mounted) return;
       setState(() {
@@ -364,11 +446,7 @@ class _ChatScreenState extends State<ChatScreen> {
     } catch (e) {
       if (!mounted) return;
       setState(() => _isUploadingFile = false);
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-        content: Text('Ошибка отправки: $e'),
-        backgroundColor: Colors.red,
-        behavior: SnackBarBehavior.floating,
-      ));
+            AppSnack.error(context, 'Ошибка отправки: $e');
     }
   }
 
@@ -426,11 +504,7 @@ class _ChatScreenState extends State<ChatScreen> {
       widget.onChatUpdated(updated);
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-        content: Text('Не удалось сохранить изменения: $e'),
-        backgroundColor: Colors.red,
-        behavior: SnackBarBehavior.floating,
-      ));
+            AppSnack.error(context, 'Не удалось сохранить изменения: $e');
     }
   }
 
@@ -498,11 +572,7 @@ class _ChatScreenState extends State<ChatScreen> {
       widget.onChatUpdated(updated);
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-        content: Text('Ошибка удаления: $e'),
-        backgroundColor: Colors.red,
-        behavior: SnackBarBehavior.floating,
-      ));
+            AppSnack.error(context, 'Ошибка удаления: $e');
     }
   }
 
@@ -545,10 +615,7 @@ class _ChatScreenState extends State<ChatScreen> {
     final others = allChats.where((c) => c.id != _currentChat.id).toList();
     if (others.isEmpty) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-          content: Text('Нет других чатов для пересылки'),
-          behavior: SnackBarBehavior.floating,
-        ));
+                AppSnack.warn(context, 'Нет других чатов для пересылки');
       }
       return;
     }
@@ -601,11 +668,7 @@ class _ChatScreenState extends State<ChatScreen> {
     );
     if (!mounted) return;
     widget.onChatUpdated(updated);
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-      content: Text('Переслано в «${target.name}»'),
-      behavior: SnackBarBehavior.floating,
-      backgroundColor: AppColors.primary,
-    ));
+        AppSnack.success(context, 'Переслано в «${target.name}»');
   }
 
   // ── Контекстное меню по долгому нажатию ──────────────
@@ -631,8 +694,8 @@ class _ChatScreenState extends State<ChatScreen> {
             // Ответить
             ListTile(
               leading: CircleAvatar(
-                backgroundColor: AppColors.primary.withValues(alpha: 0.15),
-                child: const Icon(Icons.reply, color: AppColors.primary, size: 20),
+                backgroundColor: Theme.of(context).colorScheme.primary.withValues(alpha: 0.15),
+                child: Icon(Icons.reply, color: Theme.of(context).colorScheme.primary, size: 20),
               ),
               title: const Text('Ответить'),
               onTap: () { Navigator.pop(context); _startReply(message); },
@@ -642,8 +705,8 @@ class _ChatScreenState extends State<ChatScreen> {
                 message.text.isNotEmpty &&
                 message.attachment == null)
               ListTile(
-                leading: const CircleAvatar(
-                  backgroundColor: AppColors.primary,
+                leading: CircleAvatar(
+                  backgroundColor: Theme.of(context).colorScheme.primary,
                   child: Icon(Icons.edit_outlined, color: Colors.white, size: 20),
                 ),
                 title: const Text('Редактировать'),
@@ -651,8 +714,8 @@ class _ChatScreenState extends State<ChatScreen> {
               ),
             // Переслать
             ListTile(
-              leading: const CircleAvatar(
-                backgroundColor: AppColors.primary,
+              leading: CircleAvatar(
+                backgroundColor: Theme.of(context).colorScheme.primary,
                 child: Icon(Icons.shortcut, color: Colors.white, size: 20),
               ),
               title: const Text('Переслать'),
@@ -661,9 +724,9 @@ class _ChatScreenState extends State<ChatScreen> {
             // Выделить
             ListTile(
               leading: CircleAvatar(
-                backgroundColor: AppColors.primary.withValues(alpha: 0.15),
-                child: const Icon(Icons.check_circle_outline,
-                    color: AppColors.primary, size: 20),
+                backgroundColor: Theme.of(context).colorScheme.primary.withValues(alpha: 0.15),
+                child: Icon(Icons.check_circle_outline,
+                    color: Theme.of(context).colorScheme.primary, size: 20),
               ),
               title: const Text('Выделить'),
               onTap: () { Navigator.pop(context); _enterSelectionMode(message); },
@@ -674,10 +737,10 @@ class _ChatScreenState extends State<ChatScreen> {
                 final isPinned = _currentChat.pinnedMessageIds.contains(message.id);
                 return ListTile(
                   leading: CircleAvatar(
-                    backgroundColor: AppColors.primary.withValues(alpha: 0.15),
+                    backgroundColor: Theme.of(context).colorScheme.primary.withValues(alpha: 0.15),
                     child: Icon(
                       isPinned ? Icons.push_pin_outlined : Icons.push_pin,
-                      color: AppColors.primary,
+                      color: Theme.of(context).colorScheme.primary,
                       size: 20,
                     ),
                   ),
@@ -882,11 +945,11 @@ class _ChatScreenState extends State<ChatScreen> {
       PageRouteBuilder<String?>(
         fullscreenDialog: true,
         opaque: true,
-        pageBuilder: (_, __, ___) => MediaPreviewPage(
+        pageBuilder: (_, _, _) => MediaPreviewPage(
           attachment: attachment,
           initialCaption: existingText,
         ),
-        transitionsBuilder: (_, anim, __, child) =>
+        transitionsBuilder: (_, anim, _, child) =>
             SlideTransition(
               position: Tween(
                 begin: const Offset(0, 1),
@@ -907,158 +970,101 @@ class _ChatScreenState extends State<ChatScreen> {
     await _sendMessage(attachment: attachment);
   }
 
-  /// Показывает диалог добавления участника в группу.
-  Future<void> _addMemberToGroup() async {
-    final contacts = widget.contacts;
-    final currentMembers = _currentChat.members.map((m) => m.name).toSet();
-    final available = contacts
+  /// Показывает пикер выбора контактов и отправляет каждому выбранному
+  /// DM-сообщение с карточкой-приглашением в текущую группу (Discord-style).
+  Future<void> _inviteToGroup() async {
+    final chat = _currentChat;
+    final currentMembers = chat.members.map((m) => m.name).toSet();
+    final available = widget.contacts
         .where((c) => !currentMembers.contains(c.name))
         .toList();
     if (!mounted) return;
     if (available.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-        content: Text('Все контакты уже в группе'),
-        behavior: SnackBarBehavior.floating,
-      ));
+            AppSnack.warn(context, 'Все контакты уже в этой группе');
       return;
     }
-    final selected = await showModalBottomSheet<AppContact>(
+
+    final selectedLogins = await showModalBottomSheet<Set<String>>(
       context: context,
       isScrollControlled: true,
-      shape: const RoundedRectangleBorder(
-          borderRadius: BorderRadius.vertical(top: Radius.circular(16))),
-      builder: (_) => DraggableScrollableSheet(
-        expand: false,
-        initialChildSize: 0.5,
-        maxChildSize: 0.85,
-        builder: (_, ctrl) => Column(
-          children: [
-            const SizedBox(height: 8),
-            Container(
-              width: 40, height: 4,
-              decoration: BoxDecoration(
-                  color: Colors.grey[300],
-                  borderRadius: BorderRadius.circular(2)),
-            ),
-            const Padding(
-              padding: EdgeInsets.symmetric(vertical: 12, horizontal: 16),
-              child: Align(
-                alignment: Alignment.centerLeft,
-                child: Text('Добавить в группу',
-                    style: TextStyle(
-                        fontSize: 16, fontWeight: FontWeight.bold)),
-              ),
-            ),
-            Expanded(
-              child: ListView.builder(
-                controller: ctrl,
-                itemCount: available.length,
-                itemBuilder: (ctx, i) {
-                  final c = available[i];
-                  return ListTile(
-                    leading: CircleAvatar(
-                      backgroundColor: AppColors.primary.withValues(alpha: 0.15),
-                      child: Text(
-                        c.name.isNotEmpty ? c.name[0].toUpperCase() : '?',
-                        style: const TextStyle(
-                            color: AppColors.primary, fontWeight: FontWeight.bold),
-                      ),
-                    ),
-                    title: Text(c.name),
-                    subtitle: c.group != null ? Text(c.group!) : null,
-                    onTap: () => Navigator.pop(ctx, c),
-                  );
-                },
-              ),
-            ),
-          ],
-        ),
+      backgroundColor: Colors.transparent,
+      builder: (_) => _InvitePickerSheet(
+        contacts: available,
+        groupName: chat.name,
       ),
     );
-    if (selected == null || !mounted) return;
-    try {
-      await widget.service.addMember(
-          chatId: _currentChat.id, userId: selected.name);
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-        content: Text('${selected.name} добавлен(а) в группу'),
-        behavior: SnackBarBehavior.floating,
-        backgroundColor: AppColors.primary,
-      ));
-    } catch (e) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-        content: Text('Не удалось добавить участника: $e'),
-        behavior: SnackBarBehavior.floating,
-        backgroundColor: Colors.red,
-      ));
+    if (selectedLogins == null || selectedLogins.isEmpty || !mounted) return;
+
+    // Собираем данные приглашения
+    final invite = GroupInvite(
+      chatId: chat.id,
+      chatName: chat.name,
+      chatType: chat.type,
+      avatarPath: chat.avatarPath,
+      memberCount: chat.members.length,
+    );
+    final inviteText = invite.toMessageText();
+
+    int sent = 0;
+    int failed = 0;
+    for (final login in selectedLogins) {
+      try {
+        // Получаем или создаём личный чат с этим пользователем
+        final dm = await widget.service.createDirectChat(contactName: login);
+        // Отправляем приглашение как обычное сообщение
+        await widget.service.sendMessage(
+          chatId: dm.id,
+          text: inviteText,
+          postAsCommunity: false,
+        );
+        sent++;
+      } catch (_) {
+        failed++;
+      }
     }
+    if (!mounted) return;
+    final msg = failed == 0
+        ? 'Приглашение отправлено ${_inviteWord(sent)}'
+        : 'Отправлено: $sent, ошибок: $failed';
+    AppSnack.info(context, msg);
   }
 
-  /// Получает и показывает пригласительную ссылку.
-  Future<void> _showInviteLink() async {
-    final link = await widget.service.getInviteLink(_currentChat.id);
-    if (!mounted) return;
-    if (link == null) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-        content: Text('Не удалось получить ссылку'),
-        behavior: SnackBarBehavior.floating,
-        backgroundColor: Colors.red,
-      ));
-      return;
+  String _inviteWord(int n) {
+    final m10 = n % 10, m100 = n % 100;
+    if (m100 >= 11 && m100 <= 19) return '$n получателям';
+    if (m10 == 1) return '$n получателю';
+    if (m10 >= 2 && m10 <= 4) return '$n получателям';
+    return '$n получателям';
+  }
+
+  /// Принимает приглашение в группу (текущий пользователь вступает сам).
+  Future<void> _acceptGroupInvite(GroupInvite invite) async {
+    try {
+      final joinedChat = await widget.service.joinChat(invite.chatId);
+      if (!mounted) return;
+            AppSnack.success(context, 'Вы вступили в «${invite.chatName}»');
+      // Открываем чат (embedded → через shell, иначе push)
+      if (widget.onOpenDirectChat != null) {
+        widget.onOpenDirectChat!(joinedChat);
+      } else {
+        Navigator.push(context, MaterialPageRoute(
+          builder: (_) => ChatScreen(
+            chat: joinedChat,
+            service: widget.service,
+            onChatUpdated: (c) async => widget.service.updateChatSettings(c),
+            contacts: widget.contacts,
+            auth: widget.auth,
+            signalingService: widget.signalingService,
+          ),
+        ));
+      }
+    } catch (e) {
+      if (!mounted) return;
+      final msg = e.toString().contains('Already a member')
+          ? 'Вы уже участник этой группы'
+          : 'Не удалось вступить: $e';
+      AppSnack.error(context, msg);
     }
-    showDialog(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Пригласительная ссылка'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-              decoration: BoxDecoration(
-                color: Theme.of(context).brightness == Brightness.dark
-                    ? Colors.white10
-                    : const Color(0xFFF5F5F5),
-                borderRadius: BorderRadius.circular(8),
-              ),
-              child: Row(
-                children: [
-                  Expanded(
-                    child: Text(link,
-                        style: const TextStyle(fontSize: 13),
-                        overflow: TextOverflow.ellipsis),
-                  ),
-                ],
-              ),
-            ),
-            const SizedBox(height: 8),
-            const Text('Поделитесь этой ссылкой, чтобы пригласить людей в группу.',
-                style: TextStyle(fontSize: 12, color: Colors.grey)),
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx),
-            child: const Text('Закрыть'),
-          ),
-          FilledButton.icon(
-            icon: const Icon(Icons.copy, size: 16),
-            label: const Text('Копировать'),
-            style: FilledButton.styleFrom(backgroundColor: AppColors.primary),
-            onPressed: () {
-              Clipboard.setData(ClipboardData(text: link));
-              Navigator.pop(ctx);
-              ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-                content: Text('Ссылка скопирована'),
-                behavior: SnackBarBehavior.floating,
-              ));
-            },
-          ),
-        ],
-      ),
-    );
   }
 
   void _showAttachmentOptions() =>
@@ -1245,17 +1251,28 @@ class _ChatScreenState extends State<ChatScreen> {
       setState(() => _embeddedProfileType = 'group');
       return;
     }
+    String? pendingChat;
     final result = await Navigator.push<Object>(
       context,
       MaterialPageRoute(
         builder: (_) => GroupProfileScreen(
           chat: _currentChat,
           currentUserName: widget.auth?.currentUser?.name,
+          currentUserAvatarPath: widget.auth?.currentUser?.avatarUrl,
           service: widget.service,
+          onChatWithMember: (memberName) {
+            pendingChat = memberName;
+            Navigator.of(context).pop();
+          },
         ),
       ),
     );
     if (!mounted) return;
+    // Пользователь нажал «Чат» на участнике
+    if (pendingChat != null) {
+      await _openDirectChatWith(pendingChat!);
+      return;
+    }
     if (result == true) {
       // Чат удалён — выходим к списку.
       Navigator.of(context).pop();
@@ -1267,64 +1284,84 @@ class _ChatScreenState extends State<ChatScreen> {
     }
   }
 
-  /// Открывает экран профиля собеседника (только для личных чатов).
+  /// Создаёт или открывает личный чат с [contactName] и переходит к нему.
+  Future<void> _openDirectChatWith(String contactName) async {
+    try {
+      final direct = await widget.service.createDirectChat(contactName: contactName);
+      if (!mounted) return;
+      // На desktop (embedded) — сообщаем в responsive shell, чтобы он
+      // открыл чат в панели, не ломая 3-колоночный лейаут.
+      if (widget.onOpenDirectChat != null) {
+        widget.onOpenDirectChat!(direct);
+        return;
+      }
+      // На мобильном — обычный Navigator.push.
+      Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (_) => ChatScreen(
+            chat: direct,
+            service: widget.service,
+            onChatUpdated: (c) async {
+              await widget.service.updateChatSettings(c);
+            },
+            contacts: widget.contacts,
+            auth: widget.auth,
+            signalingService: widget.signalingService,
+          ),
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+            AppSnack.error(context, 'Не удалось открыть чат: $e');
+    }
+  }
+
+  /// Открывает профиль собеседника поверх экрана (только для личных чатов).
   void _openContactProfile() {
     if (_currentChat.type != ChatType.direct) return;
-    if (widget.embedded) {
-      setState(() => _embeddedProfileType = 'contact');
-      return;
-    }
     final contact = widget.contacts
         .where((c) => c.name == _currentChat.name)
         .firstOrNull;
-    Navigator.push(
+    showContactProfileOverlay(
       context,
-      MaterialPageRoute(
-        builder: (_) => ContactProfileScreen(
-          name: _currentChat.name,
-          avatarPath: _currentChat.avatarPath,
-          description: _currentChat.description,
-          phone: contact?.phone,
-          group: contact?.group,
-        ),
-      ),
+      name: _contactDisplayName,
+      username: _contactUsername,
+      avatarPath: _currentChat.avatarPath,
+      description: _currentChat.description,
+      phone: contact?.phone,
+      group: contact?.group,
+      // onChat: null — «Чат» просто закрывает оверлей (мы уже в этом чате).
+      onCall: widget.signalingService != null
+          ? () => _startCall(isVideo: false)
+          : null,
     );
   }
 
   Widget _buildEmbeddedProfile() {
     void backFn() => setState(() => _embeddedProfileType = null);
-    if (_embeddedProfileType == 'group') {
-      return GroupProfileScreen(
-        key: ValueKey('gp_${_currentChat.id}'),
-        chat: _currentChat,
-        embedded: true,
-        onBack: backFn,
-        currentUserName: widget.auth?.currentUser?.name,
-        service: widget.service,
-        onSaved: (updated) async {
-          final saved = await widget.service.updateChatSettings(updated);
-          if (!mounted) return;
-          setState(() {
-            _currentChat = saved;
-            _embeddedProfileType = null;
-          });
-          widget.onChatUpdated(saved);
-        },
-      );
-    }
-    // contact
-    final contact = widget.contacts
-        .where((c) => c.name == _currentChat.name)
-        .firstOrNull;
-    return ContactProfileScreen(
-      key: ValueKey('cp_${_currentChat.name}'),
-      name: _currentChat.name,
-      avatarPath: _currentChat.avatarPath,
-      description: _currentChat.description,
-      phone: contact?.phone,
-      group: contact?.group,
+    // Только групповой профиль показывается встроенно на десктопе.
+    return GroupProfileScreen(
+      key: ValueKey('gp_${_currentChat.id}'),
+      chat: _currentChat,
       embedded: true,
       onBack: backFn,
+      currentUserName: widget.auth?.currentUser?.name,
+      currentUserAvatarPath: widget.auth?.currentUser?.avatarUrl,
+      service: widget.service,
+      onSaved: (updated) async {
+        final saved = await widget.service.updateChatSettings(updated);
+        if (!mounted) return;
+        setState(() {
+          _currentChat = saved;
+          _embeddedProfileType = null;
+        });
+        widget.onChatUpdated(saved);
+      },
+      onChatWithMember: (memberName) {
+        setState(() => _embeddedProfileType = null);
+        _openDirectChatWith(memberName);
+      },
     );
   }
 
@@ -1353,6 +1390,7 @@ class _ChatScreenState extends State<ChatScreen> {
   @override
   void dispose() {
     _eventSub?.cancel();
+    _censorTimer?.cancel();
     _controller.removeListener(_onTextChanged);
     _controller.dispose();
     _scrollController.dispose();
@@ -1366,6 +1404,56 @@ class _ChatScreenState extends State<ChatScreen> {
   void _setMessages(List<Message> msgs) {
     _messages = List.from(msgs)..sort((a, b) => a.time.compareTo(b.time));
     _items = _buildItemList();
+    // Сохраняем последние N сообщений в локальный кэш (фоновая операция).
+    LocalCacheService.instance.saveMessages(_currentChat.id, _messages);
+  }
+
+  // ── Эмодзи / GIF ─────────────────────────────────────
+  void _toggleEmojiPanel() {
+    setState(() => _showEmojiPanel = !_showEmojiPanel);
+  }
+
+  void _insertEmoji(String emoji) {
+    final ctrl = _controller;
+    final text = ctrl.text;
+    final sel  = ctrl.selection;
+    final pos  = sel.isValid ? sel.baseOffset : text.length;
+    final newText = text.substring(0, pos) + emoji + text.substring(pos);
+    ctrl.value = TextEditingValue(
+      text: newText,
+      selection: TextSelection.collapsed(offset: pos + emoji.length),
+    );
+  }
+
+  Future<void> _sendGif(String gifUrl) async {
+    setState(() => _showEmojiPanel = false);
+    // Сохраняем/сбрасываем текущее состояние ответа
+    final reply = _replyingTo != null
+        ? ReplyInfo(
+            messageId: _replyingTo!.id,
+            senderName: _replyingTo!.senderName ??
+                (_replyingTo!.isMe ? 'Вы' : _currentChat.name),
+            text: _replyingTo!.text,
+          )
+        : null;
+    setState(() => _replyingTo = null);
+    try {
+      final updated = await widget.service.sendMessage(
+        chatId: _currentChat.id,
+        text: Message.gifText(gifUrl),
+        replyTo: reply,
+      );
+      if (!mounted) return;
+      setState(() {
+        _setMessages(updated.messages);
+        _currentChat = updated;
+      });
+      widget.onChatUpdated(updated);
+      _scrollToBottom();
+    } catch (e) {
+      if (!mounted) return;
+      AppSnack.error(context, 'Ошибка отправки GIF: $e');
+    }
   }
 
   /// Возвращает true, если сообщение может войти в медиаальбом:
@@ -1374,7 +1462,9 @@ class _ChatScreenState extends State<ChatScreen> {
   static bool _isMediaOnly(Message msg) {
     if (msg.poll != null) return false;
     if (msg.replyTo != null) return false;
-    final att = msg.attachment;
+    final isAlbum = msg.attachments != null && msg.attachments!.length > 1;
+    final att = msg.attachment ??
+        (!isAlbum && (msg.attachments?.length == 1) ? msg.attachments!.first : null);
     if (att == null) return false;
     return att.type == AttachmentType.image || att.type == AttachmentType.video;
   }
@@ -1509,11 +1599,7 @@ class _ChatScreenState extends State<ChatScreen> {
     if (pinned.contains(message.id)) return;
     if (pinned.length >= ChatService.maxPinnedMessages) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-          content: Text(
-              'Можно закрепить не более ${ChatService.maxPinnedMessages} сообщений'),
-          behavior: SnackBarBehavior.floating,
-        ));
+                AppSnack.warn(context, 'Можно закрепить не более ${ChatService.maxPinnedMessages} сообщений');
       }
       return;
     }
@@ -1525,16 +1611,9 @@ class _ChatScreenState extends State<ChatScreen> {
       if (!mounted) return;
       setState(() => _currentChat = updated);
       widget.onChatUpdated(updated);
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-        content: Text('Сообщение закреплено'),
-        behavior: SnackBarBehavior.floating,
-      ));
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-        content: Text('Ошибка: $e'),
-        behavior: SnackBarBehavior.floating,
-      ));
+            AppSnack.error(context, 'Ошибка: $e');
     }
   }
 
@@ -1550,16 +1629,9 @@ class _ChatScreenState extends State<ChatScreen> {
         _clampPinnedBarIndex(updated.pinnedMessageIds.length);
       });
       widget.onChatUpdated(updated);
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-        content: Text('Сообщение откреплено'),
-        behavior: SnackBarBehavior.floating,
-      ));
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-        content: Text('Ошибка: $e'),
-        behavior: SnackBarBehavior.floating,
-      ));
+            AppSnack.error(context, 'Ошибка: $e');
     }
   }
 
@@ -1705,17 +1777,12 @@ class _ChatScreenState extends State<ChatScreen> {
     final contact = widget.contacts
         .where((c) => c.name == mention.username)
         .firstOrNull;
-    Navigator.push(
+    showContactProfileOverlay(
       context,
-      MaterialPageRoute(
-        builder: (_) => ContactProfileScreen(
-          name:        mention.username,
-          avatarPath:  _currentChat.type == ChatType.direct ? _currentChat.avatarPath : null,
-          description: null,
-          phone:       contact?.phone,
-          group:       contact?.group,
-        ),
-      ),
+      name:       mention.username,
+      avatarPath: _currentChat.type == ChatType.direct ? _currentChat.avatarPath : null,
+      phone:      contact?.phone,
+      group:      contact?.group,
     );
   }
 
@@ -1753,9 +1820,9 @@ class _ChatScreenState extends State<ChatScreen> {
           if (showAll)
             ListTile(
               dense: true,
-              leading: const CircleAvatar(
+              leading: CircleAvatar(
                 radius: 16,
-                backgroundColor: AppColors.primary,
+                backgroundColor: Theme.of(context).colorScheme.primary,
                 child: Icon(Icons.alternate_email, size: 16, color: Colors.white),
               ),
               title: const Text('@all',
@@ -1771,13 +1838,13 @@ class _ChatScreenState extends State<ChatScreen> {
               dense: true,
               leading: CircleAvatar(
                 radius: 16,
-                backgroundColor: AppColors.primary.withValues(alpha: 0.15),
+                backgroundColor: Theme.of(context).colorScheme.primary.withValues(alpha: 0.15),
                 child: Text(
                   m.name.isNotEmpty ? m.name[0].toUpperCase() : '?',
-                  style: const TextStyle(
+                  style: TextStyle(
                     fontSize: 13,
                     fontWeight: FontWeight.bold,
-                    color: AppColors.primary,
+                    color: Theme.of(context).colorScheme.primary,
                   ),
                 ),
               ),
@@ -1824,10 +1891,7 @@ class _ChatScreenState extends State<ChatScreen> {
       widget.onChatUpdated(updated);
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-        content: Text('Ошибка голосования: $e'),
-        behavior: SnackBarBehavior.floating,
-      ));
+            AppSnack.error(context, 'Ошибка голосования: $e');
     }
   }
 
@@ -1840,16 +1904,9 @@ class _ChatScreenState extends State<ChatScreen> {
       if (!mounted) return;
       setState(() { _setMessages(updated.messages); _currentChat = updated; });
       widget.onChatUpdated(updated);
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-        content: Text('Опрос завершён'),
-        behavior: SnackBarBehavior.floating,
-      ));
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-        content: Text('Ошибка: $e'),
-        behavior: SnackBarBehavior.floating,
-      ));
+            AppSnack.error(context, 'Ошибка: $e');
     }
   }
 
@@ -1870,10 +1927,7 @@ class _ChatScreenState extends State<ChatScreen> {
       _scrollToBottom();
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-        content: Text('Ошибка создания опроса: $e'),
-        behavior: SnackBarBehavior.floating,
-      ));
+            AppSnack.error(context, 'Ошибка создания опроса: $e');
     }
   }
 
@@ -1964,24 +2018,30 @@ class _ChatScreenState extends State<ChatScreen> {
                         ],
                       ),
                     ),
-              title: GestureDetector(
-                onTap: chat.type == ChatType.direct
-                    ? _openContactProfile
-                    : _openGroupProfile,
-                behavior: HitTestBehavior.opaque,
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(chat.name),
-                    if (chat.type != ChatType.direct)
-                      Text(
-                        chat.type == ChatType.group
-                            ? '${chat.members.length} участников'
-                            : 'Сообщество · ${chat.members.length} подписчиков',
-                        style: const TextStyle(
-                            fontSize: 12, fontWeight: FontWeight.normal),
-                      ),
-                  ],
+              title: MouseRegion(
+                cursor: SystemMouseCursors.click,
+                child: GestureDetector(
+                  onTap: chat.type == ChatType.direct
+                      ? _openContactProfile
+                      : _openGroupProfile,
+                  behavior: HitTestBehavior.opaque,
+                  child: SizedBox(
+                    width: double.infinity,
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(_contactDisplayName),
+                        if (chat.type != ChatType.direct)
+                          Text(
+                            chat.type == ChatType.group
+                                ? '${chat.members.length} участников'
+                                : 'Сообщество · ${chat.members.length} подписчиков',
+                            style: const TextStyle(
+                                fontSize: 12, fontWeight: FontWeight.normal),
+                          ),
+                      ],
+                    ),
+                  ),
                 ),
               ),
               actions: [
@@ -2001,6 +2061,25 @@ class _ChatScreenState extends State<ChatScreen> {
             ),
       body: Stack(
         children: [
+          // ── Обои чата ─────────────────────────────────────────────────
+          Builder(builder: (ctx) {
+            final chatTheme = Theme.of(ctx).extension<CustomChatTheme>();
+            final wallpaper = chatTheme?.wallpaperPath;
+            final bgColor   = chatTheme?.chatBgColor;
+            if (wallpaper != null) {
+              return Positioned.fill(
+                child: Image.file(
+                  File(wallpaper),
+                  fit: BoxFit.cover,
+                  errorBuilder: (_, _, _) => const SizedBox.shrink(),
+                ),
+              );
+            }
+            if (bgColor != null) {
+              return Positioned.fill(child: ColoredBox(color: bgColor));
+            }
+            return const SizedBox.shrink();
+          }),
           Column(
         children: [
           // ── Индикатор загрузки файла ──────────────────────────────────
@@ -2035,48 +2114,82 @@ class _ChatScreenState extends State<ChatScreen> {
                     allMedia.add(m.attachment!);
                   }
                 }
+                // Для сообществ используем цвет фона канала
+                final isCommunity = chat.type == ChatType.community;
                 return ListView.builder(
-                  padding: const EdgeInsets.symmetric(vertical: 8),
+                  padding: EdgeInsets.symmetric(
+                      vertical: isCommunity ? 0 : 8),
                   controller: _scrollController,
                   itemCount: _items.length,
                   itemBuilder: (context, index) {
+                    try {
                     final item = _items[index];
                     return switch (item) {
                       _SeparatorItem(:final date) => DateSeparator(date: date),
-                      _MsgItem(:final message) => MessageBubble(
-                          key: _keyFor(message.id),
-                          message: message,
-                          showSenderName: chat.type != ChatType.direct,
-                          myAvatarPath: _myAvatarPath,
-                          showInterlocutorAvatar: chat.type == ChatType.direct,
-                          interlocutorAvatarPath: chat.type == ChatType.direct
-                              ? chat.avatarPath
-                              : null,
-                          isSelected: _selectedIds.contains(message.id),
-                          isSelectionMode: _isSelectionMode,
-                          onLongPress: () => _showMessageActions(message),
-                          onTap: () => _toggleSelect(message.id),
-                          showComments: chat.type == ChatType.community,
-                          onOpenComments: chat.type == ChatType.community
-                              ? () => _openComments(message)
-                              : null,
-                          onReply: () => _startReply(message),
-                          allMedia: allMedia,
-                          // ── Академический чат ───────────
-                          isAcademic: chat.isAcademic,
-                          // ── Упоминания ─────────────────
-                          onMentionTap: _onMentionTap,
-                          // ── Опросы ─────────────────────
-                          currentUserId: widget.auth?.currentUser?.name,
-                          onVotePoll: message.poll != null
-                              ? (ids) => _votePoll(message.id, ids)
-                              : null,
-                          onClosePoll: (message.poll != null && _canPinMessages)
-                              ? () => _closePoll(message.id)
-                              : null,
-                          canClosePoll: message.poll != null && _canPinMessages,
-                        ),
+                      _MsgItem(:final message) => isCommunity
+                          ? ChannelPostCard(
+                              key: _keyFor(message.id),
+                              message: message,
+                              channelName: chat.name,
+                              channelAvatarPath: chat.avatarPath,
+                              isSelected: _selectedIds.contains(message.id),
+                              isSelectionMode: _isSelectionMode,
+                              onLongPress: () => _showMessageActions(message),
+                              onTap: () => _toggleSelect(message.id),
+                              onOpenComments: () => _openComments(message),
+                              allMedia: allMedia,
+                              onMentionTap: _onMentionTap,
+                              currentUserId: widget.auth?.currentUser?.name,
+                              onVotePoll: message.poll != null
+                                  ? (ids) => _votePoll(message.id, ids)
+                                  : null,
+                              onClosePoll:
+                                  (message.poll != null && _canPinMessages)
+                                      ? () => _closePoll(message.id)
+                                      : null,
+                              canClosePoll:
+                                  message.poll != null && _canPinMessages,
+                            )
+                          : MessageBubble(
+                              key: _keyFor(message.id),
+                              message: message,
+                              showSenderName: chat.type != ChatType.direct &&
+                                  chat.type != ChatType.community,
+                              myAvatarPath: _myAvatarPath,
+                              showInterlocutorAvatar:
+                                  chat.type == ChatType.direct,
+                              interlocutorAvatarPath:
+                                  chat.type == ChatType.direct
+                                      ? chat.avatarPath
+                                      : null,
+                              isSelected: _selectedIds.contains(message.id),
+                              isSelectionMode: _isSelectionMode,
+                              onLongPress: () => _showMessageActions(message),
+                              onTap: () => _toggleSelect(message.id),
+                              showComments: false,
+                              onReply: () => _startReply(message),
+                              allMedia: allMedia,
+                              isAcademic: chat.isAcademic,
+                              onMentionTap: _onMentionTap,
+                              currentUserId: widget.auth?.currentUser?.name,
+                              onVotePoll: message.poll != null
+                                  ? (ids) => _votePoll(message.id, ids)
+                                  : null,
+                              onClosePoll:
+                                  (message.poll != null && _canPinMessages)
+                                      ? () => _closePoll(message.id)
+                                      : null,
+                              canClosePoll:
+                                  message.poll != null && _canPinMessages,
+                              onAcceptInvite: message.groupInvite != null
+                                  ? _acceptGroupInvite
+                                  : null,
+                            ),
                     };
+                    } catch (e, st) {
+                      debugPrint('ChatScreen: render error at index $index: $e\n$st');
+                      return const SizedBox(height: 4);
+                    }
                   },
                 );
               },
@@ -2096,15 +2209,41 @@ class _ChatScreenState extends State<ChatScreen> {
                 message: _editingMessage!,
                 onCancel: _cancelEdit,
               ),
-            if (chat.canWriteAs(widget.auth?.currentUser?.name))
+            if (chat.canWriteAs(widget.auth?.currentUser?.name)) ...[
+              // Для сообщества — переключатель «от имени канала / себя»
+              if (chat.type == ChatType.community)
+                _ChannelInputHeader(
+                  channelName: chat.name,
+                  channelAvatarPath: chat.avatarPath,
+                  userName: widget.auth?.currentUser?.name ?? 'Вы',
+                  userAvatarPath: _myAvatarPath,
+                  postAsCommunity: _postAsCommunity,
+                  onToggle: () =>
+                      setState(() => _postAsCommunity = !_postAsCommunity),
+                ),
+              // ── Панель эмодзи / GIF (анимированное появление) ─────────
+              AnimatedSize(
+                duration: const Duration(milliseconds: 250),
+                curve: Curves.easeInOut,
+                child: _showEmojiPanel
+                    ? EmojiGifPanel(
+                        controller: _controller,
+                        onEmojiSelected: _insertEmoji,
+                        onGifSelected: _sendGif,
+                        height: 280,
+                      )
+                    : const SizedBox.shrink(),
+              ),
               MessageInput(
                 controller: _controller,
                 onSend: _sendOrEdit,
                 onAttach: _showAttachmentOptions,
                 isEditing: _editingMessage != null,
                 onSendAudio: _sendAudioMessage,
-              )
-            else
+                onEmojiTap: _toggleEmojiPanel,
+                emojiPanelOpen: _showEmojiPanel,
+              ),
+            ] else
               const LockedInput(),
           ],        // closes ...[  spread
         ],          // closes Column's children: [
@@ -2128,11 +2267,203 @@ class _ChatScreenState extends State<ChatScreen> {
                 onPickCamera:   () { _closeAttachMenu(); _pickImage(ImageSource.camera); },
                 onPickDocument: () { _closeAttachMenu(); _pickDocument(); },
                 onCreatePoll:   () { _closeAttachMenu(); _showCreatePollDialog(); },
-                onAddMember:    () { _closeAttachMenu(); _addMemberToGroup(); },
-                onInviteLink:   () { _closeAttachMenu(); _showInviteLink(); },
+                onInvite:       () { _closeAttachMenu(); _inviteToGroup(); },
               ),
             ),
           ],
+
+          // ── Toast цензуры — поверх чата, не выходит за пределы ──────────
+          AnimatedPositioned(
+            duration: const Duration(milliseconds: 350),
+            curve: Curves.easeOutCubic,
+            left: 16,
+            right: 16,
+            bottom: _censorToastVisible
+                ? (chat.canWriteAs(widget.auth?.currentUser?.name) ? 72 : 16)
+                : -120,
+            child: IgnorePointer(
+              ignoring: !_censorToastVisible,
+              child: AnimatedOpacity(
+                opacity: _censorToastVisible ? 1.0 : 0.0,
+                duration: const Duration(milliseconds: 200),
+                child: _CensorToast(
+                  message: _censorToastMsg,
+                  onDismiss: () {
+                    _censorTimer?.cancel();
+                    setState(() => _censorToastVisible = false);
+                  },
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+/// Красивый toast-баннер о замене нецензурных слов.
+/// Отображается поверх поля ввода внутри чата, не выходя за его границы.
+class _CensorToast extends StatelessWidget {
+  final String message;
+  final VoidCallback onDismiss;
+  const _CensorToast({required this.message, required this.onDismiss});
+
+  @override
+  Widget build(BuildContext context) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    const amber = Color(0xFFFFA000);
+
+    return Container(
+      decoration: BoxDecoration(
+        color: isDark ? const Color(0xFF2B2B2B) : Colors.white,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(
+          color: amber.withValues(alpha: 0.45),
+          width: 1.5,
+        ),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: isDark ? 0.55 : 0.13),
+            blurRadius: 22,
+            offset: const Offset(0, 5),
+          ),
+        ],
+      ),
+      padding: const EdgeInsets.fromLTRB(12, 10, 8, 10),
+      child: Row(
+        children: [
+          // Иконка
+          Container(
+            width: 36,
+            height: 36,
+            decoration: BoxDecoration(
+              color: amber.withValues(alpha: 0.14),
+              borderRadius: BorderRadius.circular(10),
+            ),
+            child: const Icon(Icons.shield_outlined, size: 19, color: amber),
+          ),
+          const SizedBox(width: 12),
+          // Текст
+          Expanded(
+            child: Text(
+              message,
+              style: TextStyle(
+                fontSize: 12.5,
+                height: 1.4,
+                color: isDark ? Colors.white70 : const Color(0xFF333333),
+              ),
+            ),
+          ),
+          // Кнопка закрыть
+          GestureDetector(
+            onTap: onDismiss,
+            behavior: HitTestBehavior.opaque,
+            child: Padding(
+              padding: const EdgeInsets.all(6),
+              child: Icon(
+                Icons.close_rounded,
+                size: 17,
+                color: isDark
+                    ? Colors.white.withValues(alpha: 0.35)
+                    : Colors.black.withValues(alpha: 0.35),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+/// Полоска над полем ввода в канале с переключателем «от чьего имени».
+class _ChannelInputHeader extends StatelessWidget {
+  final String channelName;
+  final String? channelAvatarPath;
+  final String userName;
+  final String? userAvatarPath;
+  final bool postAsCommunity;
+  final VoidCallback onToggle;
+
+  const _ChannelInputHeader({
+    required this.channelName,
+    this.channelAvatarPath,
+    required this.userName,
+    this.userAvatarPath,
+    required this.postAsCommunity,
+    required this.onToggle,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final isDark  = Theme.of(context).brightness == Brightness.dark;
+    final primary = Theme.of(context).colorScheme.primary;
+    final subtle  = isDark ? Colors.white38 : Colors.black45;
+    final cardClr = Theme.of(context).cardColor;
+
+    return Container(
+      decoration: BoxDecoration(
+        color: cardClr,
+        border: Border(
+          top: BorderSide(
+            color: isDark
+                ? Colors.white.withValues(alpha: 0.07)
+                : Colors.black.withValues(alpha: 0.07),
+          ),
+        ),
+      ),
+      padding: const EdgeInsets.fromLTRB(12, 5, 8, 5),
+      child: Row(
+        children: [
+          // Текущий выбор
+          AnimatedSwitcher(
+            duration: const Duration(milliseconds: 200),
+            child: postAsCommunity
+                ? Row(key: const ValueKey('comm'), children: [
+                    ChatAvatar(
+                      type: ChatType.community,
+                      avatarPath: channelAvatarPath,
+                      chatName: channelName,
+                      radius: 10,
+                    ),
+                    const SizedBox(width: 6),
+                    Text('От имени  ',
+                        style: TextStyle(fontSize: 12, color: subtle)),
+                    Text(channelName,
+                        style: TextStyle(
+                            fontSize: 12,
+                            fontWeight: FontWeight.w600,
+                            color: primary)),
+                  ])
+                : Row(key: const ValueKey('me'), children: [
+                    ProfileAvatar(
+                        avatarPath: userAvatarPath, radius: 10),
+                    const SizedBox(width: 6),
+                    Text('От своего имени',
+                        style: TextStyle(
+                            fontSize: 12,
+                            fontWeight: FontWeight.w600,
+                            color: subtle)),
+                  ]),
+          ),
+          const Spacer(),
+          // Кнопка переключения
+          TextButton.icon(
+            onPressed: onToggle,
+            icon: Icon(Icons.swap_horiz_rounded, size: 16, color: primary),
+            label: Text(
+              postAsCommunity ? 'Сменить' : 'Сменить',
+              style: TextStyle(fontSize: 11, color: primary),
+            ),
+            style: TextButton.styleFrom(
+              padding:
+                  const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+              minimumSize: Size.zero,
+              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+            ),
+          ),
         ],
       ),
     );
@@ -2238,8 +2569,7 @@ class _AttachPopup extends StatefulWidget {
   final VoidCallback onPickCamera;
   final VoidCallback onPickDocument;
   final VoidCallback onCreatePoll;
-  final VoidCallback? onAddMember;
-  final VoidCallback? onInviteLink;
+  final VoidCallback? onInvite;
 
   const _AttachPopup({
     required this.isGroup,
@@ -2247,8 +2577,7 @@ class _AttachPopup extends StatefulWidget {
     required this.onPickCamera,
     required this.onPickDocument,
     required this.onCreatePoll,
-    this.onAddMember,
-    this.onInviteLink,
+    this.onInvite,
   });
 
   @override
@@ -2292,10 +2621,8 @@ class _AttachPopupState extends State<_AttachPopup>
       (Icons.insert_drive_file_outlined,'Документ',             widget.onPickDocument),
       if (widget.isGroup) ...[
         (Icons.bar_chart_rounded,       'Опрос',                widget.onCreatePoll),
-        if (widget.onAddMember != null)
-          (Icons.person_add_outlined,   'Добавить в группу',    widget.onAddMember!),
-        if (widget.onInviteLink != null)
-          (Icons.link_outlined,         'Пригласить по ссылке', widget.onInviteLink!),
+        if (widget.onInvite != null)
+          (Icons.person_add_outlined,   'Пригласить в группу',  widget.onInvite!),
       ],
     ];
 
@@ -2318,7 +2645,7 @@ class _AttachPopupState extends State<_AttachPopup>
                   final (icon, label, onTap) = e;
                   return _AttachItem(
                     icon: icon,
-                    color: AppColors.primary,
+                    color: Theme.of(context).colorScheme.primary,
                     label: label,
                     onTap: onTap,
                   );
@@ -2417,7 +2744,7 @@ class _CreatePollDialogState extends State<_CreatePollDialog> {
   @override
   void dispose() {
     _questionCtrl.dispose();
-    for (final c in _optionCtrls) c.dispose();
+    for (final c in _optionCtrls) { c.dispose(); }
     super.dispose();
   }
 
@@ -2458,10 +2785,7 @@ class _CreatePollDialogState extends State<_CreatePollDialog> {
   void _submit() {
     final question = _questionCtrl.text.trim();
     if (question.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-        content: Text('Введите вопрос'),
-        behavior: SnackBarBehavior.floating,
-      ));
+            AppSnack.warn(context, 'Введите вопрос');
       return;
     }
     final options = _optionCtrls
@@ -2469,10 +2793,7 @@ class _CreatePollDialogState extends State<_CreatePollDialog> {
         .where((t) => t.isNotEmpty)
         .toList();
     if (options.length < 2) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-        content: Text('Добавьте хотя бы 2 варианта'),
-        behavior: SnackBarBehavior.floating,
-      ));
+            AppSnack.warn(context, 'Добавьте хотя бы 2 варианта');
       return;
     }
     Navigator.of(context).pop(_PollDraft(
@@ -2500,7 +2821,7 @@ class _CreatePollDialogState extends State<_CreatePollDialog> {
             children: [
               // ── Заголовок ─────────────────────────────
               Row(children: [
-                const Icon(Icons.poll_outlined, color: AppColors.primary),
+                Icon(Icons.poll_outlined, color: Theme.of(context).colorScheme.primary),
                 const SizedBox(width: 10),
                 const Expanded(
                   child: Text('Создать опрос',
@@ -2570,7 +2891,7 @@ class _CreatePollDialogState extends State<_CreatePollDialog> {
                   icon: const Icon(Icons.add, size: 18),
                   label: const Text('Добавить вариант'),
                   style: TextButton.styleFrom(
-                      foregroundColor: AppColors.primary,
+                      foregroundColor: Theme.of(context).colorScheme.primary,
                       padding: EdgeInsets.zero),
                 ),
               const Divider(height: 24),
@@ -2585,7 +2906,7 @@ class _CreatePollDialogState extends State<_CreatePollDialog> {
                   value: _type == PollType.multiple,
                   onChanged: (v) => setState(() =>
                       _type = v ? PollType.multiple : PollType.single),
-                  activeColor: AppColors.primary,
+                  activeThumbColor: Theme.of(context).colorScheme.primary,
                 ),
               ]),
               Row(children: [
@@ -2594,7 +2915,7 @@ class _CreatePollDialogState extends State<_CreatePollDialog> {
                   value: _isAnonymous,
                   onChanged: (v) =>
                       setState(() => _isAnonymous = v),
-                  activeColor: AppColors.primary,
+                  activeThumbColor: Theme.of(context).colorScheme.primary,
                 ),
               ]),
               Row(children: [
@@ -2604,13 +2925,13 @@ class _CreatePollDialogState extends State<_CreatePollDialog> {
                   value: _canChangeVote,
                   onChanged: (v) =>
                       setState(() => _canChangeVote = v),
-                  activeColor: AppColors.primary,
+                  activeThumbColor: Theme.of(context).colorScheme.primary,
                 ),
               ]),
               ListTile(
                 contentPadding: EdgeInsets.zero,
-                leading: const Icon(Icons.schedule,
-                    color: AppColors.primary),
+                leading: Icon(Icons.schedule,
+                    color: Theme.of(context).colorScheme.primary),
                 title: Text(
                   _deadline == null
                       ? 'Без ограничения по времени'
@@ -2638,7 +2959,7 @@ class _CreatePollDialogState extends State<_CreatePollDialog> {
                   FilledButton(
                     onPressed: _submit,
                     style: FilledButton.styleFrom(
-                        backgroundColor: AppColors.primary),
+                        backgroundColor: Theme.of(context).colorScheme.primary),
                     child: const Text('Создать'),
                   ),
                 ],
@@ -2776,7 +3097,7 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
               loadingBuilder: (_, child, prog) =>
                   prog == null ? child : const Center(
                       child: CircularProgressIndicator(color: Colors.white)),
-              errorBuilder: (_, __, ___) {
+              errorBuilder: (_, _, _) {
                 WidgetsBinding.instance.addPostFrameCallback(
                     (_) { if (mounted) setState(() => _imageError = true); });
                 return _broken();
@@ -2796,7 +3117,7 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
           child: Image.file(
             File(att.path),
             fit: BoxFit.contain,
-            errorBuilder: (_, __, ___) {
+            errorBuilder: (_, _, _) {
               WidgetsBinding.instance.addPostFrameCallback(
                   (_) { if (mounted) setState(() => _imageError = true); });
               return _broken();
@@ -2924,9 +3245,9 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
               child: Container(
                 width: 48,
                 height: 48,
-                decoration: const BoxDecoration(
+                decoration: BoxDecoration(
                   shape: BoxShape.circle,
-                  color: AppColors.primary,
+                  color: Theme.of(context).colorScheme.primary,
                 ),
                 child: const Icon(Icons.send_rounded, color: Colors.white, size: 22),
               ),
@@ -3066,11 +3387,11 @@ class _MultiMediaPreviewDialogState extends State<MultiMediaPreviewDialog> {
               loadingBuilder: (_, child, prog) =>
                   prog == null ? child : const Center(
                       child: CircularProgressIndicator(color: Colors.white54)),
-              errorBuilder: (_, __, ___) => _brokenIcon())
+              errorBuilder: (_, _, _) => _brokenIcon())
           : _brokenIcon();
     } else if (!kIsWeb) {
       img = Image.file(File(att.path), fit: BoxFit.contain,
-          errorBuilder: (_, __, ___) => _brokenIcon());
+          errorBuilder: (_, _, _) => _brokenIcon());
     } else {
       img = _brokenIcon();
     }
@@ -3086,16 +3407,28 @@ class _MultiMediaPreviewDialogState extends State<MultiMediaPreviewDialog> {
 
   Widget _buildVideoPreviewTile(Attachment att) {
     final thumbUrl = ApiConfig.resolveMediaUrl(att.thumbnailPath);
+    final isLocal = !kIsWeb && !ApiConfig.isServerMediaPath(att.path);
+    Widget bg;
+    if (thumbUrl != null) {
+      bg = ClipRRect(
+        borderRadius: BorderRadius.circular(8),
+        child: Image.network(thumbUrl, fit: BoxFit.cover, width: double.infinity,
+            errorBuilder: (_, _, _) => isLocal
+                ? SizedBox.expand(child: _LocalVideoFirstFrame(path: att.path))
+                : _darkVideoBox()),
+      );
+    } else if (isLocal) {
+      bg = ClipRRect(
+        borderRadius: BorderRadius.circular(8),
+        child: SizedBox.expand(child: _LocalVideoFirstFrame(path: att.path)),
+      );
+    } else {
+      bg = ClipRRect(borderRadius: BorderRadius.circular(8), child: _darkVideoBox());
+    }
     return Stack(
       alignment: Alignment.center,
       children: [
-        ClipRRect(
-          borderRadius: BorderRadius.circular(8),
-          child: thumbUrl != null
-              ? Image.network(thumbUrl, fit: BoxFit.cover, width: double.infinity,
-                  errorBuilder: (_, __, ___) => _darkVideoBox())
-              : _darkVideoBox(),
-        ),
+        Positioned.fill(child: bg),
         Container(
           width: 56, height: 56,
           decoration: BoxDecoration(
@@ -3136,7 +3469,7 @@ class _MultiMediaPreviewDialogState extends State<MultiMediaPreviewDialog> {
       final thumbUrl = ApiConfig.resolveMediaUrl(att.thumbnailPath);
       thumb = thumbUrl != null
           ? Image.network(thumbUrl, fit: BoxFit.cover,
-              errorBuilder: (_, __, ___) => Container(color: Colors.black54,
+              errorBuilder: (_, _, _) => Container(color: Colors.black54,
                   child: const Icon(Icons.movie_outlined, color: Colors.white38, size: 20)))
           : Container(color: Colors.black54,
               child: const Icon(Icons.movie_outlined, color: Colors.white38, size: 20));
@@ -3144,11 +3477,11 @@ class _MultiMediaPreviewDialogState extends State<MultiMediaPreviewDialog> {
       final url = ApiConfig.resolveMediaUrl(att.path);
       thumb = url != null
           ? Image.network(url, fit: BoxFit.cover,
-              errorBuilder: (_, __, ___) => Container(color: Colors.black54))
+              errorBuilder: (_, _, _) => Container(color: Colors.black54))
           : Container(color: Colors.black54);
     } else if (!kIsWeb) {
       thumb = Image.file(File(att.path), fit: BoxFit.cover,
-          errorBuilder: (_, __, ___) => Container(color: Colors.black54));
+          errorBuilder: (_, _, _) => Container(color: Colors.black54));
     } else {
       thumb = Container(color: Colors.black54);
     }
@@ -3164,7 +3497,7 @@ class _MultiMediaPreviewDialogState extends State<MultiMediaPreviewDialog> {
             decoration: BoxDecoration(
               borderRadius: BorderRadius.circular(6),
               border: isSelected
-                  ? Border.all(color: AppColors.primary, width: 2.5)
+                  ? Border.all(color: Theme.of(context).colorScheme.primary, width: 2.5)
                   : null,
             ),
             child: ClipRRect(
@@ -3275,7 +3608,7 @@ class _MultiMediaPreviewDialogState extends State<MultiMediaPreviewDialog> {
                     style: TextStyle(color: Colors.white70, fontSize: 14)),
                 value: _asFiles,
                 onChanged: (v) => setState(() => _asFiles = v ?? false),
-                activeColor: AppColors.primary,
+                activeColor: Theme.of(context).colorScheme.primary,
                 checkColor: Colors.white,
                 side: const BorderSide(color: Colors.white38),
               ),
@@ -3317,8 +3650,8 @@ class _MultiMediaPreviewDialogState extends State<MultiMediaPreviewDialog> {
                 children: [
                   TextButton(
                     onPressed: _addMore,
-                    child: const Text('Добавить',
-                        style: TextStyle(color: AppColors.primary)),
+                    child: Text('Добавить',
+                        style: TextStyle(color: Theme.of(context).colorScheme.primary)),
                   ),
                   const Spacer(),
                   TextButton(
@@ -3329,9 +3662,9 @@ class _MultiMediaPreviewDialogState extends State<MultiMediaPreviewDialog> {
                   const SizedBox(width: 4),
                   TextButton(
                     onPressed: _send,
-                    child: const Text('Отправить',
+                    child: Text('Отправить',
                         style: TextStyle(
-                            color: AppColors.primary,
+                            color: Theme.of(context).colorScheme.primary,
                             fontWeight: FontWeight.w600)),
                   ),
                 ],
@@ -3349,5 +3682,204 @@ class _MultiMediaPreviewDialogState extends State<MultiMediaPreviewDialog> {
       return 'Выбрано $n изображения';
     }
     return 'Выбрано $n изображений';
+  }
+}
+
+// ── Показывает первый кадр локального видеофайла (без воспроизведения) ────────
+
+class _LocalVideoFirstFrame extends StatefulWidget {
+  final String path;
+  const _LocalVideoFirstFrame({required this.path});
+
+  @override
+  State<_LocalVideoFirstFrame> createState() => _LocalVideoFirstFrameState();
+}
+
+class _LocalVideoFirstFrameState extends State<_LocalVideoFirstFrame> {
+  VideoPlayerController? _vpc;
+  Player? _mkPlayer;
+  VideoController? _mkController;
+  bool _ready = false;
+
+  bool get _useMediaKit =>
+      !kIsWeb && (Platform.isWindows || Platform.isLinux);
+
+  @override
+  void initState() {
+    super.initState();
+    _init();
+  }
+
+  Future<void> _init() async {
+    if (_useMediaKit) {
+      try {
+        final player = Player();
+        final ctrl = VideoController(player);
+        _mkPlayer = player;
+        _mkController = ctrl;
+        await player.open(Media(widget.path), play: false);
+        await Future.delayed(const Duration(milliseconds: 200));
+        if (mounted) setState(() => _ready = true);
+      } catch (_) {}
+    } else {
+      try {
+        final vpc = VideoPlayerController.file(File(widget.path));
+        _vpc = vpc;
+        await vpc.initialize();
+        if (!mounted) { vpc.dispose(); _vpc = null; return; }
+        setState(() => _ready = true);
+      } catch (_) {}
+    }
+  }
+
+  @override
+  void dispose() {
+    _vpc?.dispose();
+    _mkPlayer?.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (!_ready) {
+      return Container(
+        color: Colors.black87,
+        child: const Center(
+          child: SizedBox(
+            width: 24, height: 24,
+            child: CircularProgressIndicator(color: Colors.white38, strokeWidth: 2),
+          ),
+        ),
+      );
+    }
+    if (_useMediaKit && _mkController != null) {
+      return Video(controller: _mkController!, controls: NoVideoControls);
+    }
+    if (_vpc != null) {
+      return FittedBox(
+        fit: BoxFit.cover,
+        child: SizedBox(
+          width: _vpc!.value.size.width,
+          height: _vpc!.value.size.height,
+          child: VideoPlayer(_vpc!),
+        ),
+      );
+    }
+    return Container(color: Colors.black87);
+  }
+}
+
+// ── Боттом-шит выбора получателей приглашения ────────────────────────────────
+
+/// Показывает список контактов с `MemberPickerSection`.
+/// Возвращает `Set<String>` логинов выбранных получателей при нажатии «Отправить».
+class _InvitePickerSheet extends StatefulWidget {
+  final List<AppContact> contacts;
+  final String groupName;
+
+  const _InvitePickerSheet({
+    required this.contacts,
+    required this.groupName,
+  });
+
+  @override
+  State<_InvitePickerSheet> createState() => _InvitePickerSheetState();
+}
+
+class _InvitePickerSheetState extends State<_InvitePickerSheet> {
+  final Set<String> _selected = {};
+
+  void _toggle(String login, bool selected) {
+    setState(() {
+      if (selected) {
+        _selected.add(login);
+      } else {
+        _selected.remove(login);
+      }
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return DraggableScrollableSheet(
+      initialChildSize: 0.75,
+      minChildSize: 0.4,
+      maxChildSize: 0.95,
+      expand: false,
+      builder: (ctx, scrollCtrl) => Container(
+        decoration: BoxDecoration(
+          color: theme.scaffoldBackgroundColor,
+          borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
+        ),
+        child: Column(
+          children: [
+            // ── Ручка ─────────────────────────────────────
+            const SizedBox(height: 8),
+            Center(
+              child: Container(
+                width: 36,
+                height: 4,
+                decoration: BoxDecoration(
+                  color: theme.dividerColor,
+                  borderRadius: BorderRadius.circular(2),
+                ),
+              ),
+            ),
+            const SizedBox(height: 8),
+            // ── Заголовок ─────────────────────────────────
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          'Пригласить в группу',
+                          style: theme.textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w600),
+                        ),
+                        Text(
+                          widget.groupName,
+                          style: theme.textTheme.bodySmall?.copyWith(color: theme.hintColor),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ],
+                    ),
+                  ),
+                  TextButton(
+                    onPressed: _selected.isEmpty
+                        ? null
+                        : () => Navigator.pop(context, Set<String>.from(_selected)),
+                    child: Text('Отправить (${_selected.length})'),
+                  ),
+                ],
+              ),
+            ),
+            const Divider(height: 1),
+            // ── Список контактов ──────────────────────────
+            Expanded(
+              child: CustomScrollView(
+                controller: scrollCtrl,
+                slivers: [
+                  SliverPadding(
+                    padding: const EdgeInsets.all(12),
+                    sliver: SliverToBoxAdapter(
+                      child: MemberPickerSection(
+                        contacts: widget.contacts,
+                        selected: _selected,
+                        onToggle: _toggle,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 }

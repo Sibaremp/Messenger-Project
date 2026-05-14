@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
@@ -6,6 +7,7 @@ import '../models.dart';
 import '../app_constants.dart';
 import '../services/chat_service.dart';
 import '../services/api_config.dart' show ApiConfig;
+import '../utils/app_snack.dart';
 
 /// Позволяет редактировать имя, описание и аватар чата.
 /// Возвращает обновлённый [Chat] через [Navigator.pop] при сохранении.
@@ -62,6 +64,16 @@ class _ChatSettingsScreenState extends State<ChatSettingsScreen> {
     }
   }
 
+  Future<void> _pickGif() async {
+    final result = await FilePicker.platform.pickFiles(
+      type: FileType.custom,
+      allowedExtensions: ['gif'],
+    );
+    if (result != null && result.files.single.path != null && mounted) {
+      setState(() => _avatarPath = result.files.single.path);
+    }
+  }
+
   void _showPickerOptions() {
     showModalBottomSheet(
       context: context,
@@ -83,8 +95,8 @@ class _ChatSettingsScreenState extends State<ChatSettingsScreen> {
             ),
             const SizedBox(height: 8),
             ListTile(
-              leading: const CircleAvatar(
-                backgroundColor: AppColors.primary,
+              leading: CircleAvatar(
+                backgroundColor: Theme.of(context).colorScheme.primary,
                 child: Icon(Icons.camera_alt, color: Colors.white, size: 20),
               ),
               title: const Text('Сделать фото'),
@@ -94,14 +106,25 @@ class _ChatSettingsScreenState extends State<ChatSettingsScreen> {
               },
             ),
             ListTile(
-              leading: const CircleAvatar(
-                backgroundColor: AppColors.primary,
+              leading: CircleAvatar(
+                backgroundColor: Theme.of(context).colorScheme.primary,
                 child: Icon(Icons.photo_library, color: Colors.white, size: 20),
               ),
               title: const Text('Выбрать из галереи'),
               onTap: () {
                 Navigator.pop(context);
                 _pickImage(ImageSource.gallery);
+              },
+            ),
+            ListTile(
+              leading: CircleAvatar(
+                backgroundColor: Theme.of(context).colorScheme.primary,
+                child: Icon(Icons.gif, color: Colors.white, size: 20),
+              ),
+              title: const Text('Выбрать GIF'),
+              onTap: () {
+                Navigator.pop(context);
+                _pickGif();
               },
             ),
             if (_avatarPath != null)
@@ -262,12 +285,7 @@ class _ChatSettingsScreenState extends State<ChatSettingsScreen> {
   Future<void> _save() async {
     final name = _nameController.text.trim();
     if (name.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Название не может быть пустым'),
-          behavior: SnackBarBehavior.floating,
-        ),
-      );
+            AppSnack.info(context, 'Название не может быть пустым');
       return;
     }
 
@@ -296,7 +314,7 @@ class _ChatSettingsScreenState extends State<ChatSettingsScreen> {
           return CircleAvatar(
             radius: 52,
             backgroundImage: NetworkImage(url),
-            backgroundColor: AppColors.primary.withValues(alpha: 0.15),
+            backgroundColor: Theme.of(context).colorScheme.primary.withValues(alpha: 0.15),
           );
         }
       }
@@ -325,7 +343,7 @@ class _ChatSettingsScreenState extends State<ChatSettingsScreen> {
               : '?';
       return CircleAvatar(
         radius: 52,
-        backgroundColor: AppColors.primary,
+        backgroundColor: Theme.of(context).colorScheme.primary,
         child: Text(
           initials,
           style: const TextStyle(
@@ -339,7 +357,7 @@ class _ChatSettingsScreenState extends State<ChatSettingsScreen> {
 
     return CircleAvatar(
       radius: 52,
-      backgroundColor: AppColors.primary,
+      backgroundColor: Theme.of(context).colorScheme.primary,
       child: const Icon(Icons.person, size: 48, color: Colors.white),
     );
   }
@@ -365,7 +383,7 @@ class _ChatSettingsScreenState extends State<ChatSettingsScreen> {
           SliverAppBar(
             expandedHeight: 200,
             pinned: true,
-            backgroundColor: AppColors.primary,
+            backgroundColor: Theme.of(context).colorScheme.primary,
             leading: const BackButton(color: Colors.white),
             actions: [
               if (_isSaving)
@@ -391,11 +409,11 @@ class _ChatSettingsScreenState extends State<ChatSettingsScreen> {
             ],
             flexibleSpace: FlexibleSpaceBar(
               background: Container(
-                decoration: const BoxDecoration(
+                decoration: BoxDecoration(
                   gradient: LinearGradient(
                     begin: Alignment.topCenter,
                     end: Alignment.bottomCenter,
-                    colors: [AppColors.primary, Color(0xFF8B3A28)],
+                    colors: [Theme.of(context).colorScheme.primary, Color(0xFF8B3A28)],
                   ),
                 ),
                 child: SafeArea(
@@ -525,10 +543,10 @@ class _ChatSettingsScreenState extends State<ChatSettingsScreen> {
                       padding: const EdgeInsets.only(left: 4, bottom: 8),
                       child: Text(
                         '$memberLabel · ${_members.length}',
-                        style: const TextStyle(
+                        style: TextStyle(
                           fontSize: 13,
                           fontWeight: FontWeight.w600,
-                          color: AppColors.primary,
+                          color: Theme.of(context).colorScheme.primary,
                         ),
                       ),
                     ),
@@ -648,7 +666,7 @@ class _SettingsField extends StatelessWidget {
       onChanged: onChanged,
       decoration: InputDecoration(
         labelText: label,
-        prefixIcon: Icon(icon, color: AppColors.primary, size: 20),
+        prefixIcon: Icon(icon, color: Theme.of(context).colorScheme.primary, size: 20),
         filled: true,
         fillColor: Colors.transparent,
         border: InputBorder.none,
@@ -749,8 +767,8 @@ class _MemberRow extends StatelessWidget {
             ),
             // Бейдж роли
             if (member.role == MemberRole.creator)
-              const _RoleBadge(
-                  label: 'Создатель', color: AppColors.primary)
+              _RoleBadge(
+                  label: 'Создатель', color: Theme.of(context).colorScheme.primary)
             else if (member.role == MemberRole.admin)
               const _RoleBadge(label: 'Админ', color: Colors.blue),
             // Кнопка удалить

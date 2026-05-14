@@ -152,6 +152,7 @@ abstract class ChatService {
     String? senderGroup,
     ReplyInfo? replyTo,
     List<Mention> mentions,
+    bool postAsCommunity,
   });
 
   Future<Chat> editMessage({
@@ -273,6 +274,10 @@ abstract class ChatService {
 
   /// Добавляет пользователя в группу/сообщество по его userId или username.
   Future<void> addMember({required String chatId, required String userId});
+
+  /// Вступает в группу/сообщество (текущий пользователь добавляет себя).
+  /// Используется при принятии приглашения.
+  Future<Chat> joinChat(String chatId);
 
   /// Возвращает пригласительную ссылку на группу/сообщество.
   /// Может вернуть null если сервер не поддерживает эту функцию.
@@ -402,12 +407,14 @@ class LocalChatService implements ChatService {
     String? senderGroup,
     ReplyInfo? replyTo,
     List<Mention> mentions = const [],
+    bool postAsCommunity = false,
   }) async {
     final i = _idx(chatId);
     if (i == -1) throw StateError('Chat not found: $chatId');
     final msg = Message(
       text: text, isMe: true, time: DateTime.now(),
       senderName: senderName, senderGroup: senderGroup,
+      postAsCommunity: postAsCommunity,
       attachment: attachments != null ? null : attachment,
       attachments: attachments,
       replyTo: replyTo,
@@ -813,6 +820,24 @@ class LocalChatService implements ChatService {
     );
     _chats[i] = updated;
     _controller.add(ChatUpdated(updated));
+  }
+
+  @override
+  Future<Chat> joinChat(String chatId) async {
+    // В локальном режиме: добавляем себя как участника
+    final i = _idx(chatId);
+    if (i == -1) throw Exception('Chat not found');
+    final chat = _chats[i];
+    const self = 'me';
+    if (!chat.members.any((m) => m.name == self)) {
+      final updated = chat.copyWith(
+        members: [...chat.members, ChatMember(name: self, role: MemberRole.member)],
+      );
+      _chats[i] = updated;
+      _controller.add(ChatUpdated(updated));
+      return updated;
+    }
+    return chat;
   }
 
   @override

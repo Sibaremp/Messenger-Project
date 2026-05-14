@@ -43,7 +43,9 @@ public class CommentsController(AppDbContext db, ChatService chatService, Profan
                 FileName = req.Attachment.FileName,
                 FileSize = req.Attachment.FileSize,
                 Type = req.Attachment.Type,
-                MimeType = req.Attachment.MimeType
+                MimeType = req.Attachment.MimeType,
+                ThumbnailPath = req.Attachment.ThumbnailPath,
+                DurationMs = req.Attachment.DurationMs
             });
         }
 

@@ -1,7 +1,9 @@
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../providers/notifications_provider.dart';
 import '../../../../shared/models/admin_notification.dart';
+import '../../data/notifications_repository.dart';
 
 class NotificationsScreen extends ConsumerStatefulWidget {
   const NotificationsScreen({super.key});
@@ -25,12 +27,15 @@ class _NotificationsScreenState
     super.dispose();
   }
 
-  Future<void> _send() async {
+  Future<void> _send(
+      {String? attachmentUrl,
+      required VoidCallback onSuccess}) async {
     if (!_formKey.currentState!.validate()) return;
     await ref.read(sendNotificationProvider.notifier).send(
           title: _titleCtrl.text.trim(),
           body: _bodyCtrl.text.trim(),
           target: _target,
+          imageUrl: attachmentUrl,
         );
     final state = ref.read(sendNotificationProvider);
     if (state.status == SendStatus.success && mounted) {
@@ -38,6 +43,7 @@ class _NotificationsScreenState
       _bodyCtrl.clear();
       setState(() => _target = 'all');
       ref.read(sendNotificationProvider.notifier).reset();
+      onSuccess();
     }
   }
 
@@ -106,13 +112,15 @@ class _NotificationsScreenState
 
 // ── Compose card ───────────────────────────────────────────────────────────────
 
-class _ComposeCard extends ConsumerWidget {
+class _ComposeCard extends ConsumerStatefulWidget {
   final GlobalKey<FormState> formKey;
   final TextEditingController titleCtrl;
   final TextEditingController bodyCtrl;
   final String target;
   final void Function(String) onTargetChanged;
-  final VoidCallback onSend;
+  final Future<void> Function(
+      {String? attachmentUrl,
+      required VoidCallback onSuccess}) onSend;
 
   const _ComposeCard({
     required this.formKey,
@@ -124,7 +132,59 @@ class _ComposeCard extends ConsumerWidget {
   });
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<_ComposeCard> createState() => _ComposeCardState();
+}
+
+class _ComposeCardState extends ConsumerState<_ComposeCard> {
+  String? _attachmentUrl;
+  String? _attachmentName;
+  bool _uploading = false;
+
+  Future<void> _pickAttachment() async {
+    final result = await FilePicker.platform.pickFiles(
+      type: FileType.custom,
+      allowedExtensions: ['jpg', 'jpeg', 'png', 'gif', 'mp4', 'webp'],
+      withData: true,
+    );
+    if (result == null || result.files.isEmpty) return;
+    final file = result.files.first;
+    if (file.bytes == null) return;
+
+    setState(() => _uploading = true);
+    try {
+      final url = await ref
+          .read(notificationsRepositoryProvider)
+          .uploadAttachment(file.name, file.bytes!);
+      if (mounted) {
+        setState(() {
+          _attachmentUrl = url;
+          _attachmentName = file.name;
+          _uploading = false;
+        });
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() => _uploading = false);
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text('Ошибка загрузки файла: $e'),
+          backgroundColor: Colors.red.shade700,
+          behavior: SnackBarBehavior.floating,
+          shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(8)),
+        ));
+      }
+    }
+  }
+
+  void _clearAttachment() {
+    setState(() {
+      _attachmentUrl = null;
+      _attachmentName = null;
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
     final sendState = ref.watch(sendNotificationProvider);
     final loading = sendState.status == SendStatus.loading;
 
@@ -132,12 +192,13 @@ class _ComposeCard extends ConsumerWidget {
       child: Padding(
         padding: const EdgeInsets.all(24),
         child: Form(
-          key: formKey,
+          key: widget.formKey,
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               const Row(children: [
-                Icon(Icons.send_rounded, color: Color(0xFF1E3A5F), size: 20),
+                Icon(Icons.send_rounded,
+                    color: Color(0xFF1E3A5F), size: 20),
                 SizedBox(width: 10),
                 Text('Новое уведомление',
                     style: TextStyle(
@@ -147,7 +208,7 @@ class _ComposeCard extends ConsumerWidget {
               ]),
               const SizedBox(height: 20),
               TextFormField(
-                controller: titleCtrl,
+                controller: widget.titleCtrl,
                 decoration: InputDecoration(
                   labelText: 'Заголовок',
                   prefixIcon:
@@ -164,7 +225,7 @@ class _ComposeCard extends ConsumerWidget {
               ),
               const SizedBox(height: 14),
               TextFormField(
-                controller: bodyCtrl,
+                controller: widget.bodyCtrl,
                 maxLines: 3,
                 decoration: InputDecoration(
                   labelText: 'Текст уведомления',
@@ -180,6 +241,70 @@ class _ComposeCard extends ConsumerWidget {
                     (v == null || v.trim().isEmpty)
                         ? 'Введите текст'
                         : null,
+              ),
+              const SizedBox(height: 14),
+              // Attachment row
+              Row(
+                children: [
+                  const Text('Вложение:',
+                      style: TextStyle(
+                          fontSize: 14,
+                          fontWeight: FontWeight.w500,
+                          color: Color(0xFF374151))),
+                  const SizedBox(width: 12),
+                  if (_uploading)
+                    const SizedBox(
+                      width: 20,
+                      height: 20,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  else if (_attachmentName != null)
+                    Row(mainAxisSize: MainAxisSize.min, children: [
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 10, vertical: 4),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFFF0FDF4),
+                          borderRadius: BorderRadius.circular(12),
+                          border: Border.all(
+                              color: const Color(0xFFBBF7D0)),
+                        ),
+                        child: Row(mainAxisSize: MainAxisSize.min, children: [
+                          const Icon(Icons.attach_file,
+                              size: 14, color: Color(0xFF059669)),
+                          const SizedBox(width: 4),
+                          Text(
+                            _attachmentName!,
+                            style: const TextStyle(
+                                fontSize: 12,
+                                color: Color(0xFF059669),
+                                fontWeight: FontWeight.w500),
+                          ),
+                        ]),
+                      ),
+                      IconButton(
+                        icon: const Icon(Icons.close, size: 16),
+                        color: Colors.red.shade400,
+                        padding: EdgeInsets.zero,
+                        constraints: const BoxConstraints(
+                            minWidth: 28, minHeight: 28),
+                        onPressed: _clearAttachment,
+                      ),
+                    ])
+                  else
+                    OutlinedButton.icon(
+                      onPressed: _pickAttachment,
+                      icon: const Icon(Icons.attach_file, size: 16),
+                      label: const Text('Прикрепить файл',
+                          style: TextStyle(fontSize: 13)),
+                      style: OutlinedButton.styleFrom(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 12, vertical: 8),
+                        side: BorderSide(color: Colors.grey.shade300),
+                        foregroundColor: const Color(0xFF6B7280),
+                      ),
+                    ),
+                ],
               ),
               const SizedBox(height: 20),
               Row(
@@ -198,7 +323,8 @@ class _ComposeCard extends ConsumerWidget {
                       ButtonSegment(
                           value: 'all',
                           label: Text('Все'),
-                          icon: Icon(Icons.people_alt_outlined, size: 16)),
+                          icon: Icon(Icons.people_alt_outlined,
+                              size: 16)),
                       ButtonSegment(
                           value: 'students',
                           label: Text('Студенты'),
@@ -206,10 +332,12 @@ class _ComposeCard extends ConsumerWidget {
                       ButtonSegment(
                           value: 'teachers',
                           label: Text('Преподаватели'),
-                          icon: Icon(Icons.person_outlined, size: 16)),
+                          icon:
+                              Icon(Icons.person_outlined, size: 16)),
                     ],
-                    selected: {target},
-                    onSelectionChanged: (v) => onTargetChanged(v.first),
+                    selected: {widget.target},
+                    onSelectionChanged: (v) =>
+                        widget.onTargetChanged(v.first),
                   ),
                   const Spacer(),
                   if (sendState.status == SendStatus.error)
@@ -220,8 +348,8 @@ class _ComposeCard extends ConsumerWidget {
                         decoration: BoxDecoration(
                           color: Colors.red.shade50,
                           borderRadius: BorderRadius.circular(8),
-                          border:
-                              Border.all(color: Colors.red.shade200),
+                          border: Border.all(
+                              color: Colors.red.shade200),
                         ),
                         child: Text(sendState.error ?? 'Ошибка',
                             style: TextStyle(
@@ -233,7 +361,12 @@ class _ComposeCard extends ConsumerWidget {
                   SizedBox(
                     height: 42,
                     child: ElevatedButton.icon(
-                      onPressed: loading ? null : onSend,
+                      onPressed: (loading || _uploading)
+                          ? null
+                          : () => widget.onSend(
+                                attachmentUrl: _attachmentUrl,
+                                onSuccess: _clearAttachment,
+                              ),
                       style: ElevatedButton.styleFrom(
                         backgroundColor: const Color(0xFF1E3A5F),
                         foregroundColor: Colors.white,
@@ -250,7 +383,8 @@ class _ComposeCard extends ConsumerWidget {
                                   strokeWidth: 2,
                                   color: Colors.white))
                           : const Icon(Icons.send_rounded, size: 16),
-                      label: Text(loading ? 'Отправка...' : 'Отправить',
+                      label: Text(
+                          loading ? 'Отправка...' : 'Отправить',
                           style: const TextStyle(fontSize: 14)),
                     ),
                   ),
@@ -323,8 +457,8 @@ class _HistorySection extends ConsumerWidget {
     );
   }
 
-  DataRow _buildRow(BuildContext context, WidgetRef ref,
-      AdminNotification n) {
+  DataRow _buildRow(
+      BuildContext context, WidgetRef ref, AdminNotification n) {
     return DataRow(cells: [
       DataCell(Text(n.title,
           style: const TextStyle(
@@ -356,9 +490,8 @@ class _HistorySection extends ConsumerWidget {
                 .delete(n.id);
             if (context.mounted) {
               ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-                content: Text(ok
-                    ? 'Запись удалена'
-                    : 'Ошибка при удалении'),
+                content: Text(
+                    ok ? 'Запись удалена' : 'Ошибка при удалении'),
                 backgroundColor: ok
                     ? Colors.green.shade700
                     : Colors.red.shade700,

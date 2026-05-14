@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'dart:ui';
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -7,8 +8,9 @@ import '../models.dart';
 import '../app_constants.dart';
 import '../services/api_config.dart' show ApiConfig;
 import '../services/chat_service.dart';
+import 'contact_profile_screen.dart';
 
-// ─── Экран профиля группы / сообщества (info + inline edit) ──────────────────
+// ─── Экран профиля группы / сообщества (Telegram-style) ──────────────────────
 
 class GroupProfileScreen extends StatefulWidget {
   final Chat chat;
@@ -17,10 +19,15 @@ class GroupProfileScreen extends StatefulWidget {
   final VoidCallback? onBack;
   /// Имя текущего авторизованного пользователя.
   final String? currentUserName;
+  /// Аватарка текущего пользователя (для строки «Вы»).
+  final String? currentUserAvatarPath;
   /// Если передан — доступно редактирование (для создателей/админов).
   final ChatService? service;
   /// Вызывается при сохранении в embedded-режиме (вместо Navigator.pop).
   final ValueChanged<Chat>? onSaved;
+  /// Вызывается когда пользователь хочет открыть личный чат с участником группы.
+  /// Передаёт логин (name) участника.
+  final ValueChanged<String>? onChatWithMember;
 
   const GroupProfileScreen({
     super.key,
@@ -28,8 +35,10 @@ class GroupProfileScreen extends StatefulWidget {
     this.embedded = false,
     this.onBack,
     this.currentUserName,
+    this.currentUserAvatarPath,
     this.service,
     this.onSaved,
+    this.onChatWithMember,
   });
 
   @override
@@ -37,18 +46,15 @@ class GroupProfileScreen extends StatefulWidget {
 }
 
 class _GroupProfileScreenState extends State<GroupProfileScreen> {
-  // ── Display state ─────────────────────────────────────────────────────────
   bool _imageError = false;
+  bool _isEditing  = false;
+  bool _isSaving   = false;
 
-  // ── Edit mode state ───────────────────────────────────────────────────────
-  bool _isEditing = false;
-  bool _isSaving  = false;
   late final TextEditingController _nameCtrl;
   late final TextEditingController _descCtrl;
-  String? _editAvatarPath;   // локальный путь нового аватара (выбранного в пикере)
+  String? _editAvatarPath;
   late List<ChatMember> _members;
 
-  // ── Getters ───────────────────────────────────────────────────────────────
   Chat get chat => widget.chat;
   bool get embedded => widget.embedded;
 
@@ -82,7 +88,7 @@ class _GroupProfileScreenState extends State<GroupProfileScreen> {
     }
   }
 
-  // ── Photo helpers ─────────────────────────────────────────────────────────
+  // ── Avatar helpers ─────────────────────────────────────────────────────────
 
   bool get _hasPhoto {
     if (_imageError) return false;
@@ -103,8 +109,7 @@ class _GroupProfileScreenState extends State<GroupProfileScreen> {
       PageRouteBuilder(
         opaque: false,
         barrierColor: Colors.black,
-        pageBuilder: (ctx, a, b) =>
-            _FullScreenPhoto(path: p, heroTag: _heroTag),
+        pageBuilder: (ctx, a, b) => _FullScreenPhoto(path: p, heroTag: _heroTag),
         transitionsBuilder: (ctx, anim, a, child) =>
             FadeTransition(opacity: anim, child: child),
       ),
@@ -113,14 +118,9 @@ class _GroupProfileScreenState extends State<GroupProfileScreen> {
 
   Future<void> _pickAvatar(ImageSource source) async {
     final picked = await ImagePicker().pickImage(
-      source: source,
-      maxWidth: 512,
-      maxHeight: 512,
-      imageQuality: 85,
+      source: source, maxWidth: 512, maxHeight: 512, imageQuality: 85,
     );
-    if (picked != null && mounted) {
-      setState(() => _editAvatarPath = picked.path);
-    }
+    if (picked != null && mounted) setState(() => _editAvatarPath = picked.path);
   }
 
   void _showAvatarPicker() {
@@ -131,47 +131,35 @@ class _GroupProfileScreenState extends State<GroupProfileScreen> {
       builder: (_) => SafeArea(
         child: Column(mainAxisSize: MainAxisSize.min, children: [
           const SizedBox(height: 8),
-          Container(
-            width: 36, height: 4,
-            decoration: BoxDecoration(
-              color: Colors.grey[300],
-              borderRadius: BorderRadius.circular(2),
-            ),
-          ),
+          Container(width: 36, height: 4,
+            decoration: BoxDecoration(color: Colors.grey[300],
+                borderRadius: BorderRadius.circular(2))),
           const SizedBox(height: 8),
-          _PickerTile(
-            icon: Icons.camera_alt_outlined, label: 'Сделать фото',
-            onTap: () { Navigator.pop(context); _pickAvatar(ImageSource.camera); },
-          ),
-          _PickerTile(
-            icon: Icons.photo_library_outlined, label: 'Выбрать из галереи',
-            onTap: () { Navigator.pop(context); _pickAvatar(ImageSource.gallery); },
-          ),
+          _PickerTile(icon: Icons.camera_alt_outlined, label: 'Сделать фото',
+            onTap: () { Navigator.pop(context); _pickAvatar(ImageSource.camera); }),
+          _PickerTile(icon: Icons.photo_library_outlined, label: 'Выбрать из галереи',
+            onTap: () { Navigator.pop(context); _pickAvatar(ImageSource.gallery); }),
           if (_editAvatarPath != null)
-            _PickerTile(
-              icon: Icons.delete_outline, label: 'Удалить фото',
+            _PickerTile(icon: Icons.delete_outline, label: 'Удалить фото',
               color: Colors.red,
-              onTap: () { Navigator.pop(context); setState(() => _editAvatarPath = null); },
-            ),
+              onTap: () { Navigator.pop(context); setState(() => _editAvatarPath = null); }),
           const SizedBox(height: 8),
         ]),
       ),
     );
   }
 
-  // ── Edit mode controls ────────────────────────────────────────────────────
+  // ── Edit mode ──────────────────────────────────────────────────────────────
 
   void _startEditing() => setState(() => _isEditing = true);
 
-  void _cancelEditing() {
-    setState(() {
-      _isEditing = false;
-      _nameCtrl.text = chat.name;
-      _descCtrl.text = chat.description ?? '';
-      _editAvatarPath = chat.avatarPath;
-      _members = List.from(chat.members);
-    });
-  }
+  void _cancelEditing() => setState(() {
+    _isEditing = false;
+    _nameCtrl.text = chat.name;
+    _descCtrl.text = chat.description ?? '';
+    _editAvatarPath = chat.avatarPath;
+    _members = List.from(chat.members);
+  });
 
   Future<void> _save() async {
     final name = _nameCtrl.text.trim();
@@ -192,11 +180,26 @@ class _GroupProfileScreenState extends State<GroupProfileScreen> {
     }
   }
 
-  // ── Member management ─────────────────────────────────────────────────────
+  // ── Member management ──────────────────────────────────────────────────────
+
+  void _openMemberProfile(ChatMember member) {
+    if (member.name == 'Вы') return; // собственный профиль
+    showContactProfileOverlay(
+      context,
+      name: member.displayName ?? member.name,
+      username: member.displayName != null ? member.name : null,
+      avatarPath: member.avatarPath,
+      group: member.group,
+      isOnline: member.isOnline,
+      // Переход в личный чат через колбэк родителя.
+      onChat: widget.onChatWithMember != null
+          ? () => widget.onChatWithMember!(member.name)
+          : null,
+    );
+  }
 
   void _showRoleDialog(ChatMember member) {
     if (member.role == MemberRole.creator) return;
-    final isDark = Theme.of(context).brightness == Brightness.dark;
     showModalBottomSheet(
       context: context,
       shape: const RoundedRectangleBorder(
@@ -205,14 +208,14 @@ class _GroupProfileScreenState extends State<GroupProfileScreen> {
         child: Column(mainAxisSize: MainAxisSize.min, children: [
           const SizedBox(height: 8),
           Container(width: 36, height: 4,
-            decoration: BoxDecoration(color: Colors.grey[300],
-                borderRadius: BorderRadius.circular(2))),
+              decoration: BoxDecoration(color: Colors.grey[300],
+                  borderRadius: BorderRadius.circular(2))),
           const SizedBox(height: 8),
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
             child: Align(
               alignment: Alignment.centerLeft,
-              child: Text(member.name,
+              child: Text(member.displayName ?? member.name,
                   style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
             ),
           ),
@@ -253,17 +256,12 @@ class _GroupProfileScreenState extends State<GroupProfileScreen> {
       context: context,
       builder: (ctx) => AlertDialog(
         title: const Text('Удалить участника?'),
-        content: Text('«${member.name}» будет исключён из чата.'),
+        content: Text('«${member.displayName ?? member.name}» будет исключён из чата.'),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx),
-              child: const Text('Отмена')),
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Отмена')),
           TextButton(
-            onPressed: () {
-              Navigator.pop(ctx);
-              setState(() => _members.remove(member));
-            },
-            child: const Text('Удалить',
-                style: TextStyle(color: Colors.red)),
+            onPressed: () { Navigator.pop(ctx); setState(() => _members.remove(member)); },
+            child: const Text('Удалить', style: TextStyle(color: Colors.red)),
           ),
         ],
       ),
@@ -278,39 +276,23 @@ class _GroupProfileScreenState extends State<GroupProfileScreen> {
         title: Text('Удалить $label?'),
         content: Text('«${chat.name}» будет удалено навсегда.'),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx),
-              child: const Text('Отмена')),
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Отмена')),
           TextButton(
             onPressed: () async {
               Navigator.pop(ctx);
               await widget.service!.deleteChat(chat.id);
               if (!mounted) return;
-              if (widget.embedded) {
-                widget.onBack?.call();
-              } else {
-                Navigator.pop(context, true);
-              }
+              if (widget.embedded) { widget.onBack?.call(); }
+              else { Navigator.pop(context, true); }
             },
-            child: const Text('Удалить',
-                style: TextStyle(color: Colors.red)),
+            child: const Text('Удалить', style: TextStyle(color: Colors.red)),
           ),
         ],
       ),
     );
   }
 
-  // ── Member list helpers ───────────────────────────────────────────────────
-
-  static const _memberColors = [
-    Color(0xFFE57373), Color(0xFF81C784), Color(0xFF64B5F6),
-    Color(0xFFFFB74D), Color(0xFFBA68C8), Color(0xFF4DD0E1),
-    Color(0xFFF06292), Color(0xFFAED581),
-  ];
-
-  Color _colorFor(String name) {
-    final hash = name.codeUnits.fold<int>(0, (h, c) => h + c);
-    return _memberColors[hash % _memberColors.length];
-  }
+  // ── Members ordering ───────────────────────────────────────────────────────
 
   List<ChatMember> get _allMembers {
     final me = widget.currentUserName;
@@ -329,7 +311,11 @@ class _GroupProfileScreenState extends State<GroupProfileScreen> {
       const order = {MemberRole.creator: 0, MemberRole.admin: 1, MemberRole.member: 2};
       return (order[a.role] ?? 2).compareTo(order[b.role] ?? 2);
     });
-    final meEntry = ChatMember(name: 'Вы', role: myRole);
+    final meEntry = ChatMember(
+      name: 'Вы',
+      role: myRole,
+      avatarPath: widget.currentUserAvatarPath,
+    );
     if (myRole == MemberRole.creator || myRole == MemberRole.admin) {
       return [meEntry, ...others];
     } else {
@@ -345,7 +331,7 @@ class _GroupProfileScreenState extends State<GroupProfileScreen> {
     return chat.name.isNotEmpty ? chat.name[0].toUpperCase() : '?';
   }
 
-  // ── Build ─────────────────────────────────────────────────────────────────
+  // ── Build ──────────────────────────────────────────────────────────────────
 
   @override
   Widget build(BuildContext context) {
@@ -353,16 +339,16 @@ class _GroupProfileScreenState extends State<GroupProfileScreen> {
     final isCommunity = chat.type == ChatType.community;
     final allMembers  = _allMembers;
     final memberLabel = isCommunity ? 'Подписчики' : 'Участники';
-    final bgColor     = isDark ? const Color(0xFF121212) : const Color(0xFFF5F5F5);
 
     final scaffold = Scaffold(
-      backgroundColor: bgColor,
+      backgroundColor: isDark ? const Color(0xFF0F0F0F) : const Color(0xFFEFEFF4),
       body: CustomScrollView(
         slivers: [
-          // ── Шапка ────────────────────────────────────────────────
+          // ── Шапка ─────────────────────────────────────────────────────────
           SliverAppBar(
-            expandedHeight: 280,
+            expandedHeight: 300,
             pinned: true,
+            stretch: true,
             automaticallyImplyLeading: !embedded,
             leading: embedded
                 ? IconButton(
@@ -375,9 +361,10 @@ class _GroupProfileScreenState extends State<GroupProfileScreen> {
                         onPressed: _cancelEditing,
                       )
                     : null,
-            backgroundColor: isDark ? const Color(0xFF1E1E1E) : AppColors.primary,
+            backgroundColor: Colors.transparent,
             foregroundColor: Colors.white,
             surfaceTintColor: Colors.transparent,
+            elevation: 0,
             actions: [
               if (_isSaving)
                 const Padding(
@@ -400,79 +387,61 @@ class _GroupProfileScreenState extends State<GroupProfileScreen> {
                 ),
             ],
             flexibleSpace: FlexibleSpaceBar(
-              titlePadding: const EdgeInsets.fromLTRB(16, 0, 48, 14),
-              title: AnimatedBuilder(
-                animation: _nameCtrl,
-                builder: (_, __) => Column(
-                  mainAxisSize: MainAxisSize.min,
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      _isEditing
-                          ? (_nameCtrl.text.isEmpty ? chat.name : _nameCtrl.text)
-                          : chat.name,
-                      style: const TextStyle(
-                        fontSize: 18, fontWeight: FontWeight.w700,
-                        shadows: [Shadow(blurRadius: 8, color: Colors.black54)],
-                      ),
-                    ),
-                    Text(
-                      '$memberLabel · ${allMembers.length}',
-                      style: TextStyle(
-                        fontSize: 12, fontWeight: FontWeight.normal,
-                        color: Colors.white.withValues(alpha: 0.8),
-                        shadows: const [Shadow(blurRadius: 6, color: Colors.black54)],
-                      ),
-                    ),
-                  ],
+              collapseMode: CollapseMode.pin,
+              background: _buildHeaderBackground(isCommunity, context),
+              // Название в collapsed состоянии
+              title: Padding(
+                padding: const EdgeInsets.only(right: 48),
+                child: Text(
+                  _isEditing
+                      ? (_nameCtrl.text.isEmpty ? chat.name : _nameCtrl.text)
+                      : chat.name,
+                  style: const TextStyle(
+                    fontSize: 17,
+                    fontWeight: FontWeight.w600,
+                    color: Colors.white,
+                    shadows: [Shadow(blurRadius: 8, color: Colors.black54)],
+                  ),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
                 ),
               ),
-              background: _buildHeaderBackground(isCommunity, context),
+              titlePadding: const EdgeInsets.fromLTRB(56, 0, 0, 34),
             ),
           ),
 
-          // ── Контент ───────────────────────────────────────────────
+          // ── Контент ───────────────────────────────────────────────────────
           SliverToBoxAdapter(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                const SizedBox(height: 12),
+                const SizedBox(height: 8),
 
-                // ── Редактирование: название + описание ─────────────
+                // ── Редактирование: имя + описание ─────────────────────────
                 if (_isEditing) ...[
-                  _Card(isDark: isDark, children: [
-                    _EditField(
-                      controller: _nameCtrl,
-                      label: 'Название',
-                      icon: Icons.edit_outlined,
-                      isDark: isDark,
-                    ),
-                    _divider(isDark),
-                    _EditField(
-                      controller: _descCtrl,
-                      label: 'Описание',
-                      icon: Icons.info_outline,
-                      maxLines: 3,
-                      maxLength: 200,
-                      isDark: isDark,
-                    ),
+                  _Section(isDark: isDark, children: [
+                    _EditField(controller: _nameCtrl, label: 'Название',
+                        icon: Icons.edit_outlined, isDark: isDark),
+                    _Divider(isDark: isDark),
+                    _EditField(controller: _descCtrl, label: 'Описание',
+                        icon: Icons.info_outline, maxLines: 3,
+                        maxLength: 200, isDark: isDark),
                   ]),
-                  const SizedBox(height: 12),
+                  const SizedBox(height: 8),
                 ],
 
-                // ── Инфо-блок (read-only когда не редактируем) ───────
+                // ── Инфо-блок (read-only) ───────────────────────────────────
                 if (!_isEditing)
-                  _Card(isDark: isDark, children: [
+                  _Section(isDark: isDark, children: [
                     _InfoRow(
                       icon: isCommunity
-                          ? Icons.campaign_outlined
-                          : Icons.group_outlined,
+                          ? Icons.campaign_outlined : Icons.group_outlined,
                       label: 'Тип',
                       value: isCommunity ? 'Сообщество' : 'Группа',
                       isDark: isDark,
                     ),
                     if (chat.description?.isNotEmpty == true) ...[
-                      _divider(isDark),
+                      _Divider(isDark: isDark),
                       _InfoRow(
                         icon: Icons.info_outline,
                         label: 'Описание',
@@ -481,7 +450,7 @@ class _GroupProfileScreenState extends State<GroupProfileScreen> {
                       ),
                     ],
                     if (chat.createdAt != null) ...[
-                      _divider(isDark),
+                      _Divider(isDark: isDark),
                       _InfoRow(
                         icon: Icons.calendar_today_outlined,
                         label: 'Создан',
@@ -491,23 +460,19 @@ class _GroupProfileScreenState extends State<GroupProfileScreen> {
                     ],
                   ]),
 
-                // ── Тип чата (только чтение, при редактировании) ─────
                 if (_isEditing) ...[
-                  _Card(isDark: isDark, children: [
+                  _Section(isDark: isDark, children: [
                     _InfoRow(
                       icon: isCommunity
-                          ? Icons.campaign_outlined
-                          : Icons.group_outlined,
+                          ? Icons.campaign_outlined : Icons.group_outlined,
                       label: 'Тип',
                       value: isCommunity ? 'Сообщество' : 'Группа',
-                      isDark: isDark,
-                      locked: true,
+                      isDark: isDark, locked: true,
                     ),
                   ]),
-                  const SizedBox(height: 12),
+                  const SizedBox(height: 8),
 
-                  // ── Удалить ─────────────────────────────────────────
-                  _Card(isDark: isDark, children: [
+                  _Section(isDark: isDark, children: [
                     InkWell(
                       onTap: _confirmDelete,
                       child: Padding(
@@ -518,12 +483,9 @@ class _GroupProfileScreenState extends State<GroupProfileScreen> {
                               color: Colors.red, size: 22),
                           const SizedBox(width: 14),
                           Text(
-                            isCommunity
-                                ? 'Удалить сообщество'
-                                : 'Удалить группу',
+                            isCommunity ? 'Удалить сообщество' : 'Удалить группу',
                             style: const TextStyle(
-                                color: Colors.red,
-                                fontSize: 15,
+                                color: Colors.red, fontSize: 15,
                                 fontWeight: FontWeight.w500),
                           ),
                         ]),
@@ -532,41 +494,56 @@ class _GroupProfileScreenState extends State<GroupProfileScreen> {
                   ]),
                 ],
 
-                const SizedBox(height: 12),
+                const SizedBox(height: 16),
 
-                // ── Участники ────────────────────────────────────────
+                // ── Заголовок участников ───────────────────────────────────
                 Padding(
-                  padding: const EdgeInsets.fromLTRB(20, 4, 16, 8),
+                  padding: const EdgeInsets.fromLTRB(16, 0, 16, 6),
                   child: Text(
                     '$memberLabel · ${allMembers.length}',
-                    style: const TextStyle(
-                        fontSize: 14,
-                        fontWeight: FontWeight.w600,
-                        color: AppColors.primary),
+                    style: TextStyle(
+                      fontSize: 13,
+                      fontWeight: FontWeight.w600,
+                      letterSpacing: 0.3,
+                      color: Theme.of(context).colorScheme.primary,
+                    ),
                   ),
                 ),
-                _Card(
+
+                // ── Список участников ──────────────────────────────────────
+                _Section(
                   isDark: isDark,
+                  padding: EdgeInsets.zero,
                   children: [
                     for (int i = 0; i < allMembers.length; i++) ...[
-                      if (i > 0) _divider(isDark),
-                      _MemberRow(
+                      if (i > 0)
+                        Padding(
+                          padding: const EdgeInsets.only(left: 72),
+                          child: Divider(
+                            height: 1,
+                            color: isDark
+                                ? Colors.white.withValues(alpha: 0.06)
+                                : Colors.black.withValues(alpha: 0.05),
+                          ),
+                        ),
+                      _MemberTile(
                         member: allMembers[i],
-                        color: _colorFor(allMembers[i].name),
                         isDark: isDark,
                         isCurrentUser: allMembers[i].name == 'Вы',
-                        // Управление доступно только в режиме редактирования
                         canManage: _isEditing &&
                             allMembers[i].name != 'Вы' &&
                             allMembers[i].role != MemberRole.creator,
-                        onTap: _isEditing &&
-                                allMembers[i].name != 'Вы' &&
-                                allMembers[i].role != MemberRole.creator
-                            ? () => _showRoleDialog(
-                                _members.firstWhere(
-                                    (m) => m.name == allMembers[i].name,
-                                    orElse: () => allMembers[i]))
-                            : null,
+                        onTap: _isEditing
+                            ? (allMembers[i].name != 'Вы' &&
+                                    allMembers[i].role != MemberRole.creator
+                                ? () => _showRoleDialog(
+                                    _members.firstWhere(
+                                        (m) => m.name == allMembers[i].name,
+                                        orElse: () => allMembers[i]))
+                                : null)
+                            : allMembers[i].name != 'Вы'
+                                ? () => _openMemberProfile(allMembers[i])
+                                : null,
                         onRemove: _isEditing &&
                                 allMembers[i].name != 'Вы' &&
                                 allMembers[i].role != MemberRole.creator
@@ -595,11 +572,8 @@ class _GroupProfileScreenState extends State<GroupProfileScreen> {
       onKeyEvent: (_, event) {
         if (event is KeyDownEvent &&
             event.logicalKey == LogicalKeyboardKey.escape) {
-          if (_isEditing) {
-            _cancelEditing();
-          } else {
-            Navigator.of(context).pop();
-          }
+          if (_isEditing) { _cancelEditing(); }
+          else { Navigator.of(context).pop(); }
           return KeyEventResult.handled;
         }
         return KeyEventResult.ignored;
@@ -608,124 +582,144 @@ class _GroupProfileScreenState extends State<GroupProfileScreen> {
     );
   }
 
-  // ── Header background (avatar / placeholder) ──────────────────────────────
+  // ── Header background ──────────────────────────────────────────────────────
 
   Widget _buildHeaderBackground(bool isCommunity, BuildContext context) {
-    final avatarPath = _isEditing ? _editAvatarPath : chat.avatarPath;
+    // Используем локальный non-null для type promotion
+    final rawPath = _isEditing ? _editAvatarPath : chat.avatarPath;
+    final primary = Theme.of(context).colorScheme.primary;
+
     Widget background;
 
-    if (_hasPhoto && avatarPath != null) {
-      background = GestureDetector(
-        onTap: _isEditing ? null : () => _openFullPhoto(context),
-        child: Hero(
-          tag: _heroTag,
-          child: Stack(fit: StackFit.expand, children: [
-            ApiConfig.isServerMediaPath(avatarPath)
-                ? Image.network(
-                    ApiConfig.resolveMediaUrl(avatarPath)!,
-                    fit: BoxFit.cover,
-                    errorBuilder: (ctx, e, s) {
-                      WidgetsBinding.instance.addPostFrameCallback((_) {
-                        if (mounted) setState(() => _imageError = true);
-                      });
-                      return _buildPlaceholder();
-                    },
-                  )
-                : Image.file(
-                    File(avatarPath),
-                    fit: BoxFit.cover,
-                    errorBuilder: (ctx, e, s) {
-                      WidgetsBinding.instance.addPostFrameCallback((_) {
-                        if (mounted) setState(() => _imageError = true);
-                      });
-                      return _buildPlaceholder();
-                    },
-                  ),
-            const DecoratedBox(
-              decoration: BoxDecoration(
-                gradient: LinearGradient(
-                  begin: Alignment.topCenter,
-                  end: Alignment.bottomCenter,
-                  colors: [Colors.transparent, Colors.black54],
-                  stops: [0.5, 1.0],
-                ),
+    if (_hasPhoto && rawPath != null) {
+      // Dart продвигает rawPath → String здесь (прямая null-проверка)
+      final imgPath = rawPath; // non-null String
+      // Блюр-фон + чёткий аватар по центру (как в Telegram)
+      background = Stack(fit: StackFit.expand, children: [
+        // Размытый фон
+        _NetworkOrFileImage(
+          path: imgPath,
+          fit: BoxFit.cover,
+          errorBuilder: (_, _, _) => Container(color: primary),
+        ),
+        ClipRect(
+          child: BackdropFilter(
+            filter: ImageFilter.blur(sigmaX: 30, sigmaY: 30),
+            child: Container(color: Colors.black.withValues(alpha: 0.35)),
+          ),
+        ),
+        // Круглый аватар
+        if (!_isEditing)
+          Center(
+            child: GestureDetector(
+              onTap: () => _openFullPhoto(context),
+              child: Hero(
+                tag: _heroTag,
+                child: _CirclePhoto(path: imgPath, radius: 56),
               ),
             ),
-          ]),
+          ),
+        if (_isEditing)
+          Center(child: _CirclePhoto(path: imgPath, radius: 56)),
+      ]);
+    } else {
+      // Градиент с инициалами
+      background = Container(
+        decoration: BoxDecoration(
+          gradient: LinearGradient(
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+            colors: [
+              primary.withValues(alpha: 0.95),
+              HSLColor.fromColor(primary)
+                  .withLightness(
+                      (HSLColor.fromColor(primary).lightness - 0.2).clamp(0.05, 0.95))
+                  .toColor(),
+            ],
+          ),
+        ),
+        child: _isEditing ? null : Center(
+          child: Container(
+            width: 112, height: 112,
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              color: Colors.white.withValues(alpha: 0.18),
+              border: Border.all(color: Colors.white.withValues(alpha: 0.35), width: 2),
+            ),
+            child: Center(
+              child: Text(_initials,
+                  style: const TextStyle(
+                    color: Colors.white, fontSize: 42,
+                    fontWeight: FontWeight.bold, letterSpacing: 1,
+                  )),
+            ),
+          ),
         ),
       );
-    } else {
-      background = _buildPlaceholder();
     }
 
-    if (!_isEditing) return background;
-
-    // В режиме редактирования — кликабельный оверлей с иконкой камеры
-    return Stack(fit: StackFit.expand, children: [
+    // Нижний градиент для читаемости текста
+    final overlay = Stack(fit: StackFit.expand, children: [
       background,
+      const Positioned(
+        bottom: 0, left: 0, right: 0, height: 100,
+        child: DecoratedBox(
+          decoration: BoxDecoration(
+            gradient: LinearGradient(
+              begin: Alignment.topCenter,
+              end: Alignment.bottomCenter,
+              colors: [Colors.transparent, Colors.black54],
+            ),
+          ),
+        ),
+      ),
+      // Счётчик участников (имя отображается через FlexibleSpaceBar.title)
+      Positioned(
+        bottom: 14, left: 16, right: 64,
+        child: Text(
+          '${isCommunity ? "Подписчики" : "Участники"} · ${_allMembers.length}',
+          style: TextStyle(
+            color: Colors.white.withValues(alpha: 0.85),
+            fontSize: 13,
+            shadows: const [Shadow(blurRadius: 6, color: Colors.black38)],
+          ),
+        ),
+      ),
+    ]);
+
+    if (!_isEditing) return overlay;
+
+    return Stack(fit: StackFit.expand, children: [
+      overlay,
       GestureDetector(
         onTap: _showAvatarPicker,
         child: Container(
-          color: Colors.black.withValues(alpha: 0.35),
-          child: const Center(
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Icon(Icons.camera_alt, color: Colors.white, size: 40),
-                SizedBox(height: 8),
-                Text('Изменить фото',
-                    style: TextStyle(color: Colors.white, fontSize: 14)),
-              ],
-            ),
+          color: Colors.black.withValues(alpha: 0.45),
+          child: Center(
+            child: Column(mainAxisSize: MainAxisSize.min, children: [
+              const Icon(Icons.camera_alt, color: Colors.white, size: 32),
+              const SizedBox(height: 8),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 7),
+                decoration: BoxDecoration(
+                  color: Colors.black.withValues(alpha: 0.5),
+                  borderRadius: BorderRadius.circular(20),
+                ),
+                child: const Row(mainAxisSize: MainAxisSize.min, children: [
+                  Icon(Icons.camera_alt, color: Colors.white, size: 16),
+                  SizedBox(width: 6),
+                  Text('Изменить фото',
+                      style: TextStyle(color: Colors.white, fontSize: 13)),
+                ]),
+              ),
+            ]),
           ),
         ),
       ),
     ]);
   }
 
-  Widget _buildPlaceholder() {
-    return Container(
-      decoration: BoxDecoration(
-        gradient: LinearGradient(
-          begin: Alignment.topCenter,
-          end: Alignment.bottomCenter,
-          colors: [
-            AppColors.primary,
-            AppColors.primary.withValues(alpha: 0.85),
-            const Color(0xFF8B4000),
-          ],
-          stops: const [0.0, 0.6, 1.0],
-        ),
-      ),
-      child: Center(
-        child: Container(
-          width: 96, height: 96,
-          decoration: BoxDecoration(
-            shape: BoxShape.circle,
-            color: Colors.white.withValues(alpha: 0.2),
-          ),
-          child: Center(
-            child: Text(_initials,
-                style: const TextStyle(
-                    color: Colors.white,
-                    fontSize: 38,
-                    fontWeight: FontWeight.bold,
-                    letterSpacing: 1)),
-          ),
-        ),
-      ),
-    );
-  }
-
-  // ── Helpers ───────────────────────────────────────────────────────────────
-
-  Widget _divider(bool isDark) => Padding(
-        padding: const EdgeInsets.only(left: 60),
-        child: Divider(
-          height: 1,
-          color: isDark ? Colors.white10 : Colors.black.withValues(alpha: 0.06),
-        ),
-      );
+  // ── Helpers ────────────────────────────────────────────────────────────────
 
   String _formatDate(DateTime dt) {
     const months = [
@@ -737,37 +731,47 @@ class _GroupProfileScreenState extends State<GroupProfileScreen> {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// Карточка-контейнер
+// Section container (Telegram-style card)
 // ═══════════════════════════════════════════════════════════════════════════════
 
-class _Card extends StatelessWidget {
+class _Section extends StatelessWidget {
   final bool isDark;
   final List<Widget> children;
-  const _Card({required this.isDark, required this.children});
+  final EdgeInsetsGeometry? padding;
+
+  const _Section({required this.isDark, required this.children, this.padding});
 
   @override
-  Widget build(BuildContext context) {
-    return Container(
-      margin: const EdgeInsets.symmetric(horizontal: 12),
-      decoration: BoxDecoration(
-        color: isDark ? const Color(0xFF1E1E1E) : Colors.white,
-        borderRadius: BorderRadius.circular(14),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withValues(alpha: isDark ? 0.3 : 0.05),
-            blurRadius: 6,
-            offset: const Offset(0, 2),
-          ),
-        ],
-      ),
-      clipBehavior: Clip.antiAlias,
-      child: Column(children: children),
-    );
-  }
+  Widget build(BuildContext context) => Container(
+    margin: const EdgeInsets.symmetric(horizontal: 0),
+    decoration: BoxDecoration(
+      color: isDark ? const Color(0xFF1C1C1E) : Colors.white,
+    ),
+    padding: padding,
+    child: Column(children: children),
+  );
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// Строка информации (read-only)
+// Divider
+// ═══════════════════════════════════════════════════════════════════════════════
+
+class _Divider extends StatelessWidget {
+  final bool isDark;
+  const _Divider({required this.isDark});
+
+  @override
+  Widget build(BuildContext context) => Padding(
+    padding: const EdgeInsets.only(left: 56),
+    child: Divider(
+      height: 1,
+      color: isDark ? Colors.white.withValues(alpha: 0.07) : Colors.black.withValues(alpha: 0.06),
+    ),
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Info row (read-only)
 // ═══════════════════════════════════════════════════════════════════════════════
 
 class _InfoRow extends StatelessWidget {
@@ -778,56 +782,46 @@ class _InfoRow extends StatelessWidget {
   final bool locked;
 
   const _InfoRow({
-    required this.icon,
-    required this.label,
-    required this.value,
-    required this.isDark,
-    this.locked = false,
+    required this.icon, required this.label,
+    required this.value, required this.isDark, this.locked = false,
   });
 
   @override
   Widget build(BuildContext context) {
+    final color = Theme.of(context).colorScheme.primary;
     return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 13),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Container(
-            width: 36, height: 36,
-            decoration: BoxDecoration(
-              color: AppColors.primary.withValues(alpha: 0.1),
-              borderRadius: BorderRadius.circular(10),
-            ),
-            child: Icon(icon, color: AppColors.primary, size: 20),
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+      child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Container(
+          width: 34, height: 34,
+          decoration: BoxDecoration(
+            color: color.withValues(alpha: 0.1),
+            borderRadius: BorderRadius.circular(9),
           ),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(label,
-                    style: TextStyle(
-                        fontSize: 12,
-                        color: isDark ? Colors.white38 : Colors.black45)),
-                const SizedBox(height: 2),
-                Text(value,
-                    style: TextStyle(
-                        fontSize: 15,
-                        color: isDark ? Colors.white : Colors.black87)),
-              ],
-            ),
-          ),
-          if (locked)
-            Icon(Icons.lock_outline, size: 15,
-                color: isDark ? Colors.white24 : Colors.black26),
-        ],
-      ),
+          child: Icon(icon, color: color, size: 18),
+        ),
+        const SizedBox(width: 12),
+        Expanded(
+          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Text(label,
+                style: TextStyle(fontSize: 12,
+                    color: isDark ? Colors.white38 : Colors.black45)),
+            const SizedBox(height: 2),
+            Text(value,
+                style: TextStyle(fontSize: 15,
+                    color: isDark ? Colors.white : Colors.black87)),
+          ]),
+        ),
+        if (locked)
+          Icon(Icons.lock_outline, size: 15,
+              color: isDark ? Colors.white24 : Colors.black26),
+      ]),
     );
   }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// Редактируемое поле
+// Edit field
 // ═══════════════════════════════════════════════════════════════════════════════
 
 class _EditField extends StatelessWidget {
@@ -839,143 +833,153 @@ class _EditField extends StatelessWidget {
   final bool isDark;
 
   const _EditField({
-    required this.controller,
-    required this.label,
-    required this.icon,
-    required this.isDark,
-    this.maxLines = 1,
-    this.maxLength,
+    required this.controller, required this.label,
+    required this.icon, required this.isDark,
+    this.maxLines = 1, this.maxLength,
   });
 
   @override
-  Widget build(BuildContext context) {
-    return TextField(
-      controller: controller,
-      maxLines: maxLines,
-      maxLength: maxLength,
-      style: TextStyle(
-          fontSize: 15, color: isDark ? Colors.white : Colors.black87),
-      decoration: InputDecoration(
-        labelText: label,
-        prefixIcon: Icon(icon, color: AppColors.primary, size: 20),
-        filled: true,
-        fillColor: Colors.transparent,
-        border: InputBorder.none,
-        enabledBorder: InputBorder.none,
-        focusedBorder: InputBorder.none,
-        counterStyle: const TextStyle(fontSize: 11, color: AppColors.subtle),
-        contentPadding:
-            const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-      ),
-    );
-  }
+  Widget build(BuildContext context) => TextField(
+    controller: controller,
+    maxLines: maxLines,
+    maxLength: maxLength,
+    style: TextStyle(fontSize: 15, color: isDark ? Colors.white : Colors.black87),
+    decoration: InputDecoration(
+      labelText: label,
+      prefixIcon: Icon(icon, color: Theme.of(context).colorScheme.primary, size: 20),
+      filled: true,
+      fillColor: Colors.transparent,
+      border: InputBorder.none,
+      enabledBorder: InputBorder.none,
+      focusedBorder: InputBorder.none,
+      counterStyle: const TextStyle(fontSize: 11, color: AppColors.subtle),
+      contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+    ),
+  );
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// Строка участника
+// Member tile — Telegram-style
 // ═══════════════════════════════════════════════════════════════════════════════
 
-class _MemberRow extends StatelessWidget {
+class _MemberTile extends StatelessWidget {
   final ChatMember member;
-  final Color color;
   final bool isDark;
   final bool isCurrentUser;
   final bool canManage;
   final VoidCallback? onTap;
   final VoidCallback? onRemove;
 
-  const _MemberRow({
-    required this.member,
-    required this.color,
-    required this.isDark,
-    this.isCurrentUser = false,
-    this.canManage = false,
-    this.onTap,
-    this.onRemove,
+  const _MemberTile({
+    required this.member, required this.isDark,
+    this.isCurrentUser = false, this.canManage = false,
+    this.onTap, this.onRemove,
   });
 
   @override
   Widget build(BuildContext context) {
+    final primary = Theme.of(context).colorScheme.primary;
+
     return InkWell(
       onTap: onTap,
       child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
         child: Row(children: [
-          CircleAvatar(
-            radius: 20,
-            backgroundColor: isCurrentUser
-                ? AppColors.primary
-                : color.withValues(alpha: 0.18),
-            child: isCurrentUser
-                ? const Icon(Icons.person, color: Colors.white, size: 20)
-                : Text(
-                    member.name.isNotEmpty ? member.name[0].toUpperCase() : '?',
-                    style: TextStyle(
-                        color: color,
-                        fontWeight: FontWeight.bold,
-                        fontSize: 16),
+          // ── Аватар с индикатором онлайн ─────────────────────────────────
+          SizedBox(
+            width: 48, height: 48,
+            child: Stack(
+              children: [
+                MemberAvatar(
+                  member: member,
+                  isCurrentUser: isCurrentUser,
+                  radius: 24,
+                  primaryColor: primary,
+                ),
+                if (member.isOnline && !isCurrentUser)
+                  Positioned(
+                    right: 0, bottom: 0,
+                    child: Container(
+                      width: 13, height: 13,
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF4CAF50),
+                        shape: BoxShape.circle,
+                        border: Border.all(
+                          color: isDark
+                              ? const Color(0xFF1C1C1E)
+                              : Colors.white,
+                          width: 2,
+                        ),
+                      ),
+                    ),
                   ),
+              ],
+            ),
           ),
           const SizedBox(width: 12),
+
+          // ── Имя + логин / статус ─────────────────────────────────────────
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  member.name,
+                  isCurrentUser ? 'Вы' : (member.displayName ?? member.name),
                   style: TextStyle(
                     fontWeight: FontWeight.w600,
                     fontSize: 15,
                     color: isCurrentUser
-                        ? AppColors.primary
+                        ? primary
                         : isDark ? Colors.white : Colors.black87,
                   ),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
                 ),
-                if (member.role != MemberRole.member)
-                  Text(
-                    member.role == MemberRole.creator
-                        ? 'создатель' : 'администратор',
-                    style: TextStyle(
-                        fontSize: 12,
-                        color: isDark ? Colors.white38 : Colors.black38),
+                const SizedBox(height: 1),
+                Text(
+                  isCurrentUser
+                      ? 'Вы'
+                      : (member.displayName != null && member.displayName != member.name
+                          ? member.name
+                          : (member.group ?? (member.isOnline ? 'в сети' : ''))),
+                  style: TextStyle(
+                    fontSize: 13,
+                    color: member.isOnline && !isCurrentUser
+                        ? const Color(0xFF4CAF50).withValues(alpha: 0.85)
+                        : (isDark ? Colors.white38 : Colors.black38),
                   ),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
               ],
             ),
           ),
-          // Бейдж роли
-          if (member.role != MemberRole.member && !canManage)
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-              decoration: BoxDecoration(
-                color: (member.role == MemberRole.creator
-                        ? AppColors.primary : Colors.blue)
-                    .withValues(alpha: 0.12),
-                borderRadius: BorderRadius.circular(10),
-              ),
-              child: Text(
-                member.role == MemberRole.creator ? 'Создатель' : 'Админ',
-                style: TextStyle(
-                    fontSize: 12,
-                    fontWeight: FontWeight.w600,
-                    color: member.role == MemberRole.creator
-                        ? AppColors.primary : Colors.blue),
-              ),
-            ),
-          // Кнопки управления (только в edit mode)
+
+          // ── Правая часть: роль или кнопки управления ─────────────────────
           if (canManage) ...[
             if (member.role == MemberRole.admin)
-              const _SmallBadge(label: 'Админ', color: Colors.blue),
+              _RoleBadge(label: 'Админ', color: Colors.blue),
             const SizedBox(width: 6),
             GestureDetector(
-              onTap: onRemove,
-              child: const Icon(Icons.person_remove_outlined,
-                  color: Colors.red, size: 20),
-            ),
-            const SizedBox(width: 4),
-            GestureDetector(
               onTap: onTap,
-              child: Icon(Icons.manage_accounts_outlined,
-                  color: Colors.blue.withValues(alpha: 0.8), size: 20),
+              child: Padding(
+                padding: const EdgeInsets.all(4),
+                child: Icon(Icons.manage_accounts_outlined,
+                    color: Colors.blue.withValues(alpha: 0.8), size: 20),
+              ),
+            ),
+            GestureDetector(
+              onTap: onRemove,
+              child: const Padding(
+                padding: EdgeInsets.all(4),
+                child: Icon(Icons.person_remove_outlined,
+                    color: Colors.red, size: 20),
+              ),
+            ),
+          ] else if (member.role != MemberRole.member) ...[
+            _RoleBadge(
+              label: member.role == MemberRole.creator ? 'Создатель' : 'Админ',
+              color: member.role == MemberRole.creator ? primary : Colors.blue,
             ),
           ],
         ]),
@@ -984,26 +988,169 @@ class _MemberRow extends StatelessWidget {
   }
 }
 
-class _SmallBadge extends StatelessWidget {
-  final String label;
-  final Color color;
-  const _SmallBadge({required this.label, required this.color});
+// ═══════════════════════════════════════════════════════════════════════════════
+// Member avatar — сеть / файл / инициалы
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Публичный виджет аватарки участника — переиспользуется в других местах.
+class MemberAvatar extends StatelessWidget {
+  final ChatMember member;
+  final bool isCurrentUser;
+  final double radius;
+  final Color primaryColor;
+
+  const MemberAvatar({
+    super.key,
+    required this.member,
+    this.isCurrentUser = false,
+    this.radius = 20,
+    required this.primaryColor,
+  });
+
+  static const _colors = [
+    Color(0xFFE57373), Color(0xFF81C784), Color(0xFF64B5F6),
+    Color(0xFFFFB74D), Color(0xFFBA68C8), Color(0xFF4DD0E1),
+    Color(0xFFF06292), Color(0xFFAED581),
+  ];
+
+  Color _bgColor(String name) {
+    final hash = name.codeUnits.fold<int>(0, (h, c) => h + c);
+    return _colors[hash % _colors.length];
+  }
 
   @override
-  Widget build(BuildContext context) => Container(
-        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-        decoration: BoxDecoration(
-          color: color.withValues(alpha: 0.12),
-          borderRadius: BorderRadius.circular(8),
-        ),
-        child: Text(label,
-            style: TextStyle(
-                fontSize: 11, fontWeight: FontWeight.w600, color: color)),
+  Widget build(BuildContext context) {
+    final p = member.avatarPath;
+    final hasNet = p != null && p.isNotEmpty && ApiConfig.isServerMediaPath(p);
+    final hasFile = p != null && p.isNotEmpty && !kIsWeb && File(p).existsSync();
+
+    if (isCurrentUser && !hasNet && !hasFile) {
+      return CircleAvatar(
+        radius: radius,
+        backgroundColor: primaryColor,
+        child: Icon(Icons.person, color: Colors.white, size: radius * 0.9),
       );
+    }
+
+    // Dart-3 flow analysis promotes p → String inside these blocks
+    // (p != null is part of hasNet/hasFile definitions)
+    if (hasNet) {
+      final url = ApiConfig.resolveMediaUrl(p);
+      if (url != null) {
+        return CircleAvatar(
+          radius: radius,
+          backgroundImage: NetworkImage(url),
+          onBackgroundImageError: (_, _) {},
+          backgroundColor: _bgColor(member.name),
+          child: null,
+        );
+      }
+    }
+
+    if (hasFile) {
+      return CircleAvatar(
+        radius: radius,
+        backgroundImage: FileImage(File(p)),
+        backgroundColor: _bgColor(member.name),
+      );
+    }
+
+    // Инициалы
+    final label = isCurrentUser ? 'Вы' : (member.displayName ?? member.name);
+    final initial = label.isNotEmpty ? label[0].toUpperCase() : '?';
+    final bg = isCurrentUser ? primaryColor : _bgColor(member.name);
+
+    return CircleAvatar(
+      radius: radius,
+      backgroundColor: bg.withValues(alpha: 0.18),
+      child: Text(
+        initial,
+        style: TextStyle(
+          color: isCurrentUser ? primaryColor : bg,
+          fontWeight: FontWeight.bold,
+          fontSize: radius * 0.75,
+        ),
+      ),
+    );
+  }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// Строка в пикере фото
+// Role badge
+// ═══════════════════════════════════════════════════════════════════════════════
+
+class _RoleBadge extends StatelessWidget {
+  final String label;
+  final Color color;
+  const _RoleBadge({required this.label, required this.color});
+
+  @override
+  Widget build(BuildContext context) => Container(
+    padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 3),
+    decoration: BoxDecoration(
+      color: color.withValues(alpha: 0.12),
+      borderRadius: BorderRadius.circular(8),
+    ),
+    child: Text(label,
+        style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: color)),
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Circular photo (network or file)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+class _CirclePhoto extends StatelessWidget {
+  final String path;
+  final double radius;
+  const _CirclePhoto({required this.path, required this.radius});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: radius * 2, height: radius * 2,
+      decoration: BoxDecoration(
+        shape: BoxShape.circle,
+        border: Border.all(color: Colors.white.withValues(alpha: 0.5), width: 2.5),
+        boxShadow: [
+          BoxShadow(color: Colors.black.withValues(alpha: 0.3), blurRadius: 16),
+        ],
+      ),
+      child: ClipOval(child: _NetworkOrFileImage(path: path, fit: BoxFit.cover)),
+    );
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Image: network or file
+// ═══════════════════════════════════════════════════════════════════════════════
+
+class _NetworkOrFileImage extends StatelessWidget {
+  final String path;
+  final BoxFit fit;
+  final Widget Function(BuildContext, Object, StackTrace?)? errorBuilder;
+
+  const _NetworkOrFileImage({required this.path, this.fit = BoxFit.cover, this.errorBuilder});
+
+  @override
+  Widget build(BuildContext context) {
+    if (ApiConfig.isServerMediaPath(path)) {
+      return Image.network(
+        ApiConfig.resolveMediaUrl(path)!,
+        fit: fit,
+        errorBuilder: errorBuilder ?? (_, _, _) => const SizedBox(),
+      );
+    }
+    if (!kIsWeb && File(path).existsSync()) {
+      return Image.file(File(path), fit: fit,
+          errorBuilder: errorBuilder ?? (_, _, _) => const SizedBox());
+    }
+    return const SizedBox();
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Picker tile
 // ═══════════════════════════════════════════════════════════════════════════════
 
 class _PickerTile extends StatelessWidget {
@@ -1011,12 +1158,12 @@ class _PickerTile extends StatelessWidget {
   final String label;
   final VoidCallback onTap;
   final Color? color;
-  const _PickerTile(
-      {required this.icon, required this.label, required this.onTap, this.color});
+  const _PickerTile({required this.icon, required this.label,
+      required this.onTap, this.color});
 
   @override
   Widget build(BuildContext context) {
-    final c = color ?? AppColors.primary;
+    final c = color ?? Theme.of(context).colorScheme.primary;
     return ListTile(
       leading: CircleAvatar(
         backgroundColor: c.withValues(alpha: 0.12),
@@ -1029,7 +1176,7 @@ class _PickerTile extends StatelessWidget {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// Просмотр фото на весь экран
+// Full-screen photo viewer
 // ═══════════════════════════════════════════════════════════════════════════════
 
 class _FullScreenPhoto extends StatelessWidget {
@@ -1044,19 +1191,17 @@ class _FullScreenPhoto extends StatelessWidget {
       body: Stack(children: [
         Center(
           child: InteractiveViewer(
-            minScale: 0.5,
-            maxScale: 6.0,
+            minScale: 0.5, maxScale: 6.0,
             child: Hero(
               tag: heroTag,
               child: ApiConfig.isServerMediaPath(path)
                   ? Image.network(ApiConfig.resolveMediaUrl(path)!,
                       fit: BoxFit.contain,
-                      errorBuilder: (ctx, e, s) => const Icon(
-                          Icons.broken_image, color: Colors.white38, size: 64))
-                  : Image.file(File(path),
-                      fit: BoxFit.contain,
-                      errorBuilder: (ctx, e, s) => const Icon(
-                          Icons.broken_image, color: Colors.white38, size: 64)),
+                      errorBuilder: (_, _, _) =>
+                          const Icon(Icons.broken_image, color: Colors.white38, size: 64))
+                  : Image.file(File(path), fit: BoxFit.contain,
+                      errorBuilder: (_, _, _) =>
+                          const Icon(Icons.broken_image, color: Colors.white38, size: 64)),
             ),
           ),
         ),

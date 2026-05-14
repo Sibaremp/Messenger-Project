@@ -30,48 +30,56 @@ class AppSizes {
 /// Расширения файлов, воспринимаемые как видео при выборе документов.
 const kVideoExtensions = {'mp4', 'mov', 'avi', 'mkv', 'webm', 'm4v', '3gp'};
 
-/// Форматирует [time] как HH:mm (используется внутри пузырьков сообщений).
+/// Форматирует [time] как HH:mm в **локальном** часовом поясе устройства.
+/// Сервер хранит время в UTC; здесь оно конвертируется перед отображением,
+/// поэтому сообщение, отправленное во Вьетнаме в 03:00 UTC+7, на устройстве
+/// в Алматы (UTC+5) отобразится как 01:00.
 String formatTime(DateTime time) {
-  final h = time.hour.toString().padLeft(2, '0');
-  final m = time.minute.toString().padLeft(2, '0');
+  final local = time.toLocal();
+  final h = local.hour.toString().padLeft(2, '0');
+  final m = local.minute.toString().padLeft(2, '0');
   return '$h:$m';
 }
 
 /// Заголовок группы сообщений (Telegram-style):
 /// Сегодня / Вчера / День недели / ДД.ММ / ДД.ММ.ГГГГ
+/// Все сравнения выполняются в **локальном** часовом поясе.
 String formatMessageGroupDate(DateTime date) {
-  final now      = DateTime.now();
-  final today    = DateTime(now.year, now.month, now.day);
+  final local     = date.toLocal();
+  final now       = DateTime.now();
+  final today     = DateTime(now.year, now.month, now.day);
   final yesterday = today.subtract(const Duration(days: 1));
-  final d        = DateTime(date.year, date.month, date.day);
+  final d         = DateTime(local.year, local.month, local.day);
 
   if (d == today)     return 'Сегодня';
   if (d == yesterday) return 'Вчера';
   // Текущая неделя (менее 7 дней назад)
   if (today.difference(d).inDays < 7) {
     const days = ['Понедельник','Вторник','Среда','Четверг','Пятница','Суббота','Воскресенье'];
-    return days[date.weekday - 1];
+    return days[local.weekday - 1];
   }
-  final dd = date.day.toString().padLeft(2, '0');
-  final mm = date.month.toString().padLeft(2, '0');
+  final dd = local.day.toString().padLeft(2, '0');
+  final mm = local.month.toString().padLeft(2, '0');
   if (d.year == now.year) return '$dd.$mm';
-  return '$dd.$mm.${date.year}';
+  return '$dd.$mm.${local.year}';
 }
 
 /// Умная метка времени для списка чатов: сегодня → HH:mm, вчера → "Вчера",
 /// в течение 7 дней → сокращённый день недели, старше → "d MMM".
+/// Конвертирует в локальный часовой пояс перед форматированием.
 String formatChatTime(DateTime time) {
-  final now   = DateTime.now();
-  final today = DateTime(now.year, now.month, now.day);
+  final local     = time.toLocal();
+  final now       = DateTime.now();
+  final today     = DateTime(now.year, now.month, now.day);
   final yesterday = today.subtract(const Duration(days: 1));
-  final day   = DateTime(time.year, time.month, time.day);
+  final day       = DateTime(local.year, local.month, local.day);
 
   if (day == today)     return formatTime(time);
   if (day == yesterday) return 'Вчера';
   if (today.difference(day).inDays < 7) {
     const days = ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс'];
-    return days[time.weekday - 1];
+    return days[local.weekday - 1];
   }
   const months = ['янв','фев','мар','апр','май','июн','июл','авг','сен','окт','ноя','дек'];
-  return '${time.day} ${months[time.month - 1]}';
+  return '${local.day} ${months[local.month - 1]}';
 }

@@ -63,7 +63,8 @@ public class CallService(IServiceScopeFactory scopeFactory, ILogger<CallService>
         lock (call.Participants)
         {
             call.Participants.Remove(userId);
-            ended = call.Participants.Count == 0;
+            // Call ends when no participants remain, or when the initiator leaves
+            ended = call.Participants.Count == 0 || call.InitiatorId == userId;
             remaining = [.. call.Participants];
         }
 

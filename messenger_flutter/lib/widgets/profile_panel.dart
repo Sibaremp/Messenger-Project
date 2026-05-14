@@ -7,6 +7,7 @@ import '../services/auth_service.dart' as svc;
 import '../services/api_config.dart' show ApiConfig;
 import '../services/chat_service.dart' show ChatService;
 import '../screens/devices_screen.dart';
+import '../utils/app_snack.dart';
 
 /// Панель профиля для desktop-режима (правая панель).
 /// Объединяет просмотр и редактирование в одном виде, как на макете.
@@ -87,7 +88,26 @@ class _ProfilePanelState extends State<ProfilePanel> {
       _groupCtrl.text = profile.group ?? '';
       _bioCtrl.text = profile.bio;
       _avatarPath = profile.avatarPath;
-      // _pendingTheme читается лениво в build() — его нельзя читать в initState
+    });
+    // Обновляем с сервера чтобы сбросить устаревший кэш
+    widget.auth.refreshCurrentUser().then((_) {
+      if (!mounted) return;
+      _loadProfileLocal();
+    });
+  }
+
+  void _loadProfileLocal() {
+    final profile = profileFromAuth(widget.auth.currentUser);
+    if (!mounted) return;
+    setState(() {
+      _profile = profile;
+      _nameCtrl.text = profile.name;
+      _loginCtrl.text = profile.login;
+      _roleCtrl.text = profile.roleLabel;
+      _phoneCtrl.text = profile.phone ?? '';
+      _groupCtrl.text = profile.group ?? '';
+      _bioCtrl.text = profile.bio;
+      _avatarPath = profile.avatarPath;
     });
   }
 
@@ -124,9 +144,7 @@ class _ProfilePanelState extends State<ProfilePanel> {
     } catch (e) {
       if (!mounted) return;
       setState(() => _saving = false);
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Не удалось загрузить аватар: $e')),
-      );
+            AppSnack.error(context, 'Не удалось загрузить аватар: $e');
       return;
     }
 
@@ -141,7 +159,6 @@ class _ProfilePanelState extends State<ProfilePanel> {
       clearPhone: phone.isEmpty,
     );
     await widget.auth.updateProfile(
-      name: updated.name,
       bio: updated.bio,
       phone: updated.phone,
       avatarUrl: updated.avatarPath,
@@ -159,13 +176,69 @@ class _ProfilePanelState extends State<ProfilePanel> {
       _saving = false;
     });
     widget.onAvatarChanged?.call();
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-        content: Text('Профиль сохранён'),
-        behavior: SnackBarBehavior.floating,
-        duration: Duration(seconds: 2),
+        AppSnack.info(context, 'Профиль сохранён');
+  }
+
+  Future<void> _changeLogin() async {
+    final loginCtrl = TextEditingController();
+    final passCtrl  = TextEditingController();
+    bool obscure = true;
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setSt) => AlertDialog(
+          title: const Text('Сменить логин'),
+          content: Column(mainAxisSize: MainAxisSize.min, children: [
+            TextField(
+              controller: loginCtrl,
+              autofocus: true,
+              maxLength: 32,
+              decoration: const InputDecoration(labelText: 'Новый логин'),
+            ),
+            const SizedBox(height: 8),
+            TextField(
+              controller: passCtrl,
+              obscureText: obscure,
+              decoration: InputDecoration(
+                labelText: 'Текущий пароль',
+                suffixIcon: IconButton(
+                  icon: Icon(obscure ? Icons.visibility_off : Icons.visibility),
+                  onPressed: () => setSt(() => obscure = !obscure),
+                ),
+              ),
+            ),
+          ]),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('Отмена'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(ctx, true),
+              child: const Text('Сохранить'),
+            ),
+          ],
+        ),
       ),
     );
+
+    if (confirmed != true) return;
+    final newLogin = loginCtrl.text.trim();
+    final password = passCtrl.text;
+    if (newLogin.isEmpty || password.isEmpty) return;
+    try {
+      await widget.auth.changeLogin(newLogin, password);
+      if (!mounted) return;
+      _loadProfileLocal();
+            AppSnack.success(context, 'Логин изменён');
+    } on svc.AuthException catch (e) {
+      if (!mounted) return;
+            AppSnack.info(context, 'e.message');
+    } catch (_) {
+      if (!mounted) return;
+            AppSnack.error(context, 'Ошибка смены логина');
+    }
   }
 
   void _openDevices() {
@@ -211,7 +284,7 @@ class _ProfilePanelState extends State<ProfilePanel> {
                 child: Container(
                   decoration: BoxDecoration(
                     shape: BoxShape.circle,
-                    border: Border.all(color: AppColors.primary, width: 3),
+                    border: Border.all(color: Theme.of(context).colorScheme.primary, width: 3),
                   ),
                   child: Padding(
                     padding: const EdgeInsets.all(3),
@@ -225,7 +298,7 @@ class _ProfilePanelState extends State<ProfilePanel> {
                 padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
                 decoration: BoxDecoration(
                   color: _profile!.role == ProfileRole.teacher
-                      ? AppColors.primary.withValues(alpha: 0.15)
+                      ? Theme.of(context).colorScheme.primary.withValues(alpha: 0.15)
                       : Colors.blue.withValues(alpha: 0.15),
                   borderRadius: BorderRadius.circular(8),
                 ),
@@ -235,7 +308,7 @@ class _ProfilePanelState extends State<ProfilePanel> {
                     fontSize: 11,
                     fontWeight: FontWeight.w600,
                     color: _profile!.role == ProfileRole.teacher
-                        ? AppColors.primary
+                        ? Theme.of(context).colorScheme.primary
                         : Colors.blue,
                   ),
                 ),
@@ -269,6 +342,7 @@ class _ProfilePanelState extends State<ProfilePanel> {
               _UnderlineField(
                 label: 'Имя',
                 controller: _nameCtrl,
+                readOnly: true,
                 fieldColor: fieldColor,
                 labelColor: labelColor,
                 dividerColor: dividerColor,
@@ -284,6 +358,12 @@ class _ProfilePanelState extends State<ProfilePanel> {
                       fieldColor: fieldColor,
                       labelColor: labelColor,
                       dividerColor: dividerColor,
+                      suffixIcon: IconButton(
+                        icon: const Icon(Icons.edit_outlined, size: 16),
+                        tooltip: 'Сменить логин',
+                        color: AppColors.subtle,
+                        onPressed: _changeLogin,
+                      ),
                     ),
                   ),
                   const SizedBox(width: 24),
@@ -382,7 +462,7 @@ class _ProfilePanelState extends State<ProfilePanel> {
                 child: FilledButton(
                   onPressed: _saving ? null : _save,
                   style: FilledButton.styleFrom(
-                    backgroundColor: AppColors.primary,
+                    backgroundColor: Theme.of(context).colorScheme.primary,
                     foregroundColor: Colors.white,
                     shape: RoundedRectangleBorder(
                         borderRadius: BorderRadius.circular(10)),
@@ -405,16 +485,16 @@ class _ProfilePanelState extends State<ProfilePanel> {
                   height: 48,
                   child: OutlinedButton.icon(
                     onPressed: _openDevices,
-                    icon: const Icon(Icons.devices_outlined,
-                        color: AppColors.primary),
-                    label: const Text(
+                    icon: Icon(Icons.devices_outlined,
+                        color: Theme.of(context).colorScheme.primary),
+                    label: Text(
                       'Управление устройствами',
                       style: TextStyle(
-                          color: AppColors.primary,
+                          color: Theme.of(context).colorScheme.primary,
                           fontWeight: FontWeight.w600),
                     ),
                     style: OutlinedButton.styleFrom(
-                      side: const BorderSide(color: AppColors.primary),
+                      side: BorderSide(color: Theme.of(context).colorScheme.primary),
                       shape: RoundedRectangleBorder(
                           borderRadius: BorderRadius.circular(10)),
                     ),
@@ -448,6 +528,7 @@ class _UnderlineField extends StatelessWidget {
   final Color labelColor;
   final Color dividerColor;
   final int maxLines;
+  final Widget? suffixIcon;
 
   const _UnderlineField({
     required this.label,
@@ -458,6 +539,7 @@ class _UnderlineField extends StatelessWidget {
     required this.labelColor,
     required this.dividerColor,
     this.maxLines = 1,
+    this.suffixIcon,
   });
 
   @override
@@ -482,12 +564,13 @@ class _UnderlineField extends StatelessWidget {
             hintStyle: TextStyle(color: labelColor.withValues(alpha: 0.5)),
             isDense: true,
             contentPadding: const EdgeInsets.symmetric(vertical: 8),
+            suffixIcon: suffixIcon,
             border: UnderlineInputBorder(
                 borderSide: BorderSide(color: dividerColor)),
             enabledBorder: UnderlineInputBorder(
                 borderSide: BorderSide(color: dividerColor)),
-            focusedBorder: const UnderlineInputBorder(
-                borderSide: BorderSide(color: AppColors.primary, width: 1.5)),
+            focusedBorder: UnderlineInputBorder(
+                borderSide: BorderSide(color: Theme.of(context).colorScheme.primary, width: 1.5)),
           ),
         ),
       ],
@@ -517,11 +600,11 @@ class _ProfileThemeChip extends StatelessWidget {
           duration: const Duration(milliseconds: 200),
           padding: const EdgeInsets.symmetric(vertical: 10),
           decoration: BoxDecoration(
-            color: selected ? AppColors.primary : Colors.transparent,
+            color: selected ? Theme.of(context).colorScheme.primary : Colors.transparent,
             borderRadius: BorderRadius.circular(8),
             border: Border.all(
               color: selected
-                  ? AppColors.primary
+                  ? Theme.of(context).colorScheme.primary
                   : AppColors.subtle.withValues(alpha: 0.3),
             ),
           ),

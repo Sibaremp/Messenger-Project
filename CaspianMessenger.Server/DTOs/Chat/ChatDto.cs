@@ -51,6 +51,8 @@ public class MemberDto
     public Guid UserId { get; set; }
     public Guid Id => UserId; // алиас для клиентов, читающих "id"
     public string Name { get; set; } = string.Empty;
+    /// <summary>ФИО из таблицы Person; null если участник не связан с Person.</summary>
+    public string? DisplayName { get; set; }
     public string? Group { get; set; }
     public string? AvatarPath { get; set; }
     public string Role { get; set; } = string.Empty;
@@ -63,8 +65,12 @@ public class MessageDto
     public Guid ChatId { get; set; }
     public Guid SenderId { get; set; }
     public string SenderName { get; set; } = string.Empty;
+    /// <summary>ФИО в формате «Фамилия И.О.» из таблицы Person; null если не связан с Person.</summary>
+    public string? SenderDisplayName { get; set; }
     public string? SenderGroup { get; set; }
     public string? SenderAvatarPath { get; set; }
+    /// <summary>true — сообщение опубликовано от имени сообщества (скрыть автора).</summary>
+    public bool PostAsCommunity { get; set; }
     public string Text { get; set; } = string.Empty;
     public Guid? ReplyToId { get; set; }
     public ReplyDto? ReplyTo { get; set; }
@@ -78,6 +84,36 @@ public class MessageDto
     public List<CommentDto> Comments { get; set; } = [];
     public List<MentionDto> Mentions { get; set; } = [];
     public PollDto? Poll { get; set; }
+
+    /// <summary>
+    /// Returns a shallow copy of this MessageDto with <see cref="Text"/> replaced by
+    /// <paramref name="encryptedText"/>. Used by NotificationService to send per-recipient
+    /// encrypted SignalR events without mutating the original DTO.
+    /// </summary>
+    public MessageDto WithEncryptedText(string encryptedText) => new()
+    {
+        Id                = Id,
+        ChatId            = ChatId,
+        SenderId          = SenderId,
+        SenderName        = SenderName,
+        SenderDisplayName = SenderDisplayName,
+        SenderGroup       = SenderGroup,
+        SenderAvatarPath  = SenderAvatarPath,
+        PostAsCommunity   = PostAsCommunity,
+        Text              = encryptedText,
+        ReplyToId        = ReplyToId,
+        ReplyTo          = ReplyTo,
+        IsEdited         = IsEdited,
+        Status           = Status,
+        CreatedAt        = CreatedAt,
+        Time             = Time,
+        UpdatedAt        = UpdatedAt,
+        Attachment       = Attachment,
+        Attachments      = Attachments,
+        Comments         = Comments,
+        Mentions         = Mentions,
+        Poll             = Poll
+    };
 }
 
 public class ReplyDto
@@ -105,6 +141,8 @@ public class CommentDto
     public Guid MessageId { get; set; }
     public Guid SenderId { get; set; }
     public string SenderName { get; set; } = string.Empty;
+    /// <summary>ФИО в формате «Фамилия И.О.» из таблицы Person; null если не связан с Person.</summary>
+    public string? SenderDisplayName { get; set; }
     public string? SenderGroup { get; set; }
     public string? SenderAvatarPath { get; set; }
     public string Text { get; set; } = string.Empty;

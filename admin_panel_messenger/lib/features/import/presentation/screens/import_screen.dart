@@ -39,6 +39,10 @@ class ImportScreen extends ConsumerWidget {
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
                     _UploadCard(importState: state),
+                    const SizedBox(height: 20),
+                    const _JsonFormatCard(),
+                    const SizedBox(height: 16),
+                    const _ExcelFormatCard(),
                     if (state.status == ImportStatus.success &&
                         state.result != null) ...[
                       const SizedBox(height: 20),
@@ -116,12 +120,14 @@ class _UploadCard extends ConsumerWidget {
             const SizedBox(height: 8),
             Text(
               'Поддерживаемые форматы: JSON, XLSX, XLS',
-              style: TextStyle(color: Colors.grey.shade500, fontSize: 14),
+              style:
+                  TextStyle(color: Colors.grey.shade500, fontSize: 14),
             ),
             const SizedBox(height: 4),
             Text(
               'Файл будет обработан на сервере',
-              style: TextStyle(color: Colors.grey.shade400, fontSize: 12),
+              style:
+                  TextStyle(color: Colors.grey.shade400, fontSize: 12),
             ),
             const SizedBox(height: 28),
             if (importState.fileName != null) ...[
@@ -132,7 +138,8 @@ class _UploadCard extends ConsumerWidget {
               height: 48,
               width: 200,
               child: ElevatedButton.icon(
-                onPressed: loading ? null : () => _pick(context, ref),
+                onPressed:
+                    loading ? null : () => _pick(context, ref),
                 style: ElevatedButton.styleFrom(
                   backgroundColor: const Color(0xFF1E3A5F),
                   foregroundColor: Colors.white,
@@ -158,6 +165,187 @@ class _UploadCard extends ConsumerWidget {
               ),
             ),
           ],
+        ),
+      ),
+    );
+  }
+}
+
+// ── JSON format guide card ────────────────────────────────────────────────────
+
+class _JsonFormatCard extends StatelessWidget {
+  const _JsonFormatCard();
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      child: Padding(
+        padding: const EdgeInsets.all(20),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Row(children: [
+              Icon(Icons.data_object,
+                  color: Color(0xFF1D4ED8), size: 20),
+              SizedBox(width: 10),
+              Text(
+                'Структура JSON файла',
+                style: TextStyle(
+                    fontSize: 15,
+                    fontWeight: FontWeight.w700,
+                    color: Color(0xFF111827)),
+              ),
+            ]),
+            const SizedBox(height: 8),
+            Text(
+              'Файл должен содержать массив объектов',
+              style:
+                  TextStyle(fontSize: 13, color: Colors.grey.shade600),
+            ),
+            const SizedBox(height: 12),
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                color: const Color(0xFFF8FAFC),
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: Colors.grey.shade200),
+              ),
+              child: const Text(
+                '[\n'
+                '  {\n'
+                '    "lastName": "Иванов",\n'
+                '    "firstName": "Иван",\n'
+                '    "middleName": "Иванович",  // необязательно\n'
+                '    "role": "student",         // "student" или "teacher"\n'
+                '    "group": "ПО 22-2"         // необязательно\n'
+                '  }\n'
+                ']',
+                style: TextStyle(
+                    fontFamily: 'monospace',
+                    fontSize: 12,
+                    color: Color(0xFF374151),
+                    height: 1.6),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// ── Excel format guide card ───────────────────────────────────────────────────
+
+class _ExcelFormatCard extends StatelessWidget {
+  const _ExcelFormatCard();
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      child: Padding(
+        padding: const EdgeInsets.all(20),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Row(children: [
+              Icon(Icons.table_chart,
+                  color: Color(0xFF059669), size: 20),
+              SizedBox(width: 10),
+              Text(
+                'Структура Excel файла',
+                style: TextStyle(
+                    fontSize: 15,
+                    fontWeight: FontWeight.w700,
+                    color: Color(0xFF111827)),
+              ),
+            ]),
+            const SizedBox(height: 8),
+            Text(
+              'Первая строка — заголовки колонок',
+              style:
+                  TextStyle(fontSize: 13, color: Colors.grey.shade600),
+            ),
+            const SizedBox(height: 12),
+            ClipRRect(
+              borderRadius: BorderRadius.circular(8),
+              child: Table(
+                border: TableBorder.all(
+                  color: Colors.grey.shade200,
+                  width: 1,
+                ),
+                columnWidths: const {
+                  0: FlexColumnWidth(2),
+                  1: FlexColumnWidth(1.5),
+                  2: FlexColumnWidth(3),
+                },
+                children: [
+                  // Header
+                  const TableRow(
+                    decoration: BoxDecoration(
+                        color: Color(0xFFF8FAFC)),
+                    children: [
+                      _TableCell('Колонка', isHeader: true),
+                      _TableCell('Обязательно', isHeader: true),
+                      _TableCell('Значения', isHeader: true),
+                    ],
+                  ),
+                  // Rows
+                  _excelRow('lastName', '✓', 'Фамилия'),
+                  _excelRow('firstName', '✓', 'Имя'),
+                  _excelRow(
+                      'middleName', '—', 'Отчество (необязательно)'),
+                  _excelRow(
+                      'role', '✓', 'student / teacher'),
+                  _excelRow('group', '—', 'Название группы'),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  TableRow _excelRow(String col, String required, String values) {
+    return TableRow(
+      children: [
+        _TableCell(col, mono: true),
+        _TableCell(required,
+            color: required == '✓'
+                ? const Color(0xFF059669)
+                : Colors.grey),
+        _TableCell(values),
+      ],
+    );
+  }
+}
+
+class _TableCell extends StatelessWidget {
+  final String text;
+  final bool isHeader;
+  final bool mono;
+  final Color? color;
+
+  const _TableCell(this.text,
+      {this.isHeader = false, this.mono = false, this.color});
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      child: Text(
+        text,
+        style: TextStyle(
+          fontSize: 12,
+          fontWeight: isHeader ? FontWeight.w600 : FontWeight.normal,
+          fontFamily: mono ? 'monospace' : null,
+          color: color ??
+              (isHeader
+                  ? const Color(0xFF374151)
+                  : const Color(0xFF4B5563)),
         ),
       ),
     );
@@ -296,7 +484,8 @@ class _StatCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Container(
-      padding: const EdgeInsets.symmetric(vertical: 18, horizontal: 20),
+      padding:
+          const EdgeInsets.symmetric(vertical: 18, horizontal: 20),
       decoration: BoxDecoration(
         color: bgColor,
         borderRadius: BorderRadius.circular(10),

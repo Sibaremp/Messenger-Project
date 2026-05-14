@@ -17,6 +17,9 @@ public class Message
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
     public DateTime? UpdatedAt { get; set; }
 
+    /// <summary>true — сообщение опубликовано от имени сообщества, а не конкретного пользователя.</summary>
+    public bool PostAsCommunity { get; set; }
+
     public Guid? PollId { get; set; }
     public Poll? Poll { get; set; }
 

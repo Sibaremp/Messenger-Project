@@ -53,13 +53,14 @@ public class CallsHub(
         if (callerId == Guid.Empty) return;
         if (string.IsNullOrWhiteSpace(dto.CallId)) return;
 
-        var caller = await db.Users.FindAsync(callerId);
-        if (caller == null) return;
+        if (await db.Users.FindAsync(callerId) == null) return;
 
         // callId используется как строковый ключ группы SignalR.
         // Для CallService нужен Guid — берём из callId если это валидный UUID,
         // иначе генерируем новый (не критично, только для in-memory учёта).
         var callGuid = Guid.TryParse(dto.CallId, out var g) ? g : Guid.NewGuid();
+
+        var callerName = await GetDisplayNameAsync(callerId);
 
         await callService.CreateCallAsync(callGuid, callerId.ToString(), dto.IsVideo, dto.IsGroup);
         await Groups.AddToGroupAsync(Context.ConnectionId, dto.CallId);
@@ -68,7 +69,7 @@ public class CallsHub(
         {
             callId      = dto.CallId,
             callerId    = callerId.ToString(),
-            callerName  = caller.Name,
+            callerName,
             isVideo     = dto.IsVideo,
             isGroup     = dto.IsGroup,
         };
@@ -82,7 +83,7 @@ public class CallsHub(
             // FCM push на все устройства (если фон / закрыто приложение)
             await fcmService.SendCallNotificationAsync(
                 targetId, dto.CallId, callerId.ToString(),
-                caller.Name, dto.IsVideo, dto.IsGroup);
+                callerName, dto.IsVideo, dto.IsGroup);
         }
 
         logger.LogInformation("Call {CallId} started by {CallerId}, targets: {Targets}",
@@ -96,19 +97,18 @@ public class CallsHub(
         if (userId == Guid.Empty) return;
         if (string.IsNullOrWhiteSpace(callId)) return;
 
-        var user = await db.Users.FindAsync(userId);
-
         await Groups.AddToGroupAsync(Context.ConnectionId, callId);
 
         // Обновляем in-memory состояние если callId — валидный UUID
         if (Guid.TryParse(callId, out var callGuid))
             await callService.JoinCallAsync(callGuid, userId.ToString());
 
+        var joinName = await GetDisplayNameAsync(userId);
         await Clients.OthersInGroup(callId).SendAsync("ParticipantJoined", new
         {
             callId,
             userId = userId.ToString(),
-            name   = user?.Name ?? userId.ToString(),
+            name   = joinName,
         });
 
         logger.LogInformation("User {UserId} joined call {CallId}", userId, callId);
@@ -121,8 +121,6 @@ public class CallsHub(
         if (userId == Guid.Empty) return;
         if (string.IsNullOrWhiteSpace(callId)) return;
 
-        var user = await db.Users.FindAsync(userId);
-
         await Groups.RemoveFromGroupAsync(Context.ConnectionId, callId);
 
         bool callEnded = false;
@@ -132,12 +130,15 @@ public class CallsHub(
         if (callEnded)
             await Clients.Group(callId).SendAsync("CallEnded", new { callId });
         else
+        {
+            var leaveName = await GetDisplayNameAsync(userId);
             await Clients.Group(callId).SendAsync("ParticipantLeft", new
             {
                 callId,
                 userId = userId.ToString(),
-                name   = user?.Name ?? userId.ToString(),
+                name   = leaveName,
             });
+        }
 
         logger.LogInformation("User {UserId} left call {CallId} (ended={Ended})", userId, callId, callEnded);
     }
@@ -198,7 +199,7 @@ public class CallsHub(
         if (userId != Guid.Empty)
         {
             var userIdStr = userId.ToString();
-            var user = await db.Users.FindAsync(userId);
+            var displayName = await GetDisplayNameAsync(userId);
 
             foreach (var call in callService.GetUserActiveCalls(userIdStr).ToList())
             {
@@ -211,7 +212,7 @@ public class CallsHub(
                     {
                         callId = callIdStr,
                         userId = userIdStr,
-                        name   = user?.Name ?? userIdStr,
+                        name   = displayName,
                     });
             }
         }
@@ -225,5 +226,18 @@ public class CallsHub(
         var sub = Context.User?.FindFirst(ClaimTypes.NameIdentifier)?.Value
                   ?? Context.User?.FindFirst("sub")?.Value;
         return Guid.TryParse(sub, out var id) ? id : Guid.Empty;
+    }
+
+    private async Task<string> GetDisplayNameAsync(Guid userId)
+    {
+        var person = await db.People.FirstOrDefaultAsync(p => p.UserId == userId);
+        if (person != null)
+        {
+            var parts = new[] { person.LastName, person.FirstName, person.MiddleName }
+                .Where(p => !string.IsNullOrWhiteSpace(p));
+            return string.Join(" ", parts);
+        }
+        var user = await db.Users.FindAsync(userId);
+        return user?.Name ?? userId.ToString();
     }
 }

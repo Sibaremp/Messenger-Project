@@ -206,11 +206,11 @@ class _FilterChip extends StatelessWidget {
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
         decoration: BoxDecoration(
-          color: selected ? AppColors.primary : Colors.transparent,
+          color: selected ? Theme.of(context).colorScheme.primary : Colors.transparent,
           borderRadius: BorderRadius.circular(16),
           border: Border.all(
             color: selected
-                ? AppColors.primary
+                ? Theme.of(context).colorScheme.primary
                 : AppColors.subtle.withAlpha(76),
           ),
         ),
@@ -257,10 +257,10 @@ class _NotificationCard extends StatelessWidget {
           width: 48,
           height: 48,
           decoration: BoxDecoration(
-            color: AppColors.primary.withAlpha(30),
+            color: Theme.of(context).colorScheme.primary.withAlpha(30),
             borderRadius: BorderRadius.circular(12),
           ),
-          child: const Icon(Icons.campaign_outlined, color: AppColors.primary, size: 26),
+          child: Icon(Icons.campaign_outlined, color: Theme.of(context).colorScheme.primary, size: 26),
         ),
         const SizedBox(width: 14),
 
@@ -284,14 +284,14 @@ class _NotificationCard extends StatelessWidget {
                   Container(
                     padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
                     decoration: BoxDecoration(
-                      color: AppColors.primary.withAlpha(25),
+                      color: Theme.of(context).colorScheme.primary.withAlpha(25),
                       borderRadius: BorderRadius.circular(10),
                     ),
                     child: Text(
                       _targetLabel(notification.target),
-                      style: const TextStyle(
+                      style: TextStyle(
                         fontSize: 11,
-                        color: AppColors.primary,
+                        color: Theme.of(context).colorScheme.primary,
                         fontWeight: FontWeight.w600,
                       ),
                     ),

@@ -318,6 +318,9 @@ namespace CaspianMessenger.Server.Migrations
                     b.Property<Guid?>("PollId")
                         .HasColumnType("uuid");
 
+                    b.Property<bool>("PostAsCommunity")
+                        .HasColumnType("boolean");
+
                     b.Property<Guid?>("ReplyToId")
                         .HasColumnType("uuid");
 
@@ -419,6 +422,9 @@ namespace CaspianMessenger.Server.Migrations
                         .HasColumnType("integer");
 
                     NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp with time zone");
 
                     b.Property<string>("FirstName")
                         .IsRequired()

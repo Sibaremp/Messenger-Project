@@ -17,15 +17,29 @@ public class UsersController(AppDbContext db, FileService fileService) : Control
     public async Task<IActionResult> GetMe()
     {
         var userId = GetUserId();
-        var user = await db.Users.FindAsync(userId);
+        var user   = await db.Users.FindAsync(userId);
         if (user == null) return NotFound();
+
+        var person = await db.People.FirstOrDefaultAsync(p => p.UserId == userId);
         return Ok(new AuthResponse
         {
-            Id = user.Id, Name = user.Name, Role = user.Role, Group = user.Group,
-            Phone = user.Phone, Email = user.Email,
-            AvatarPath = user.AvatarPath, AvatarUrl = user.AvatarPath,
-            Description = user.Description, Bio = user.Description,
-            IsOnline = user.IsOnline, LastSeen = user.LastSeen, Token = ""
+            Id          = user.Id,
+            Login       = user.Name,   // явный логин — никогда не перепутается с ФИО
+            Name        = user.Name,   // обратная совместимость
+            Role        = user.Role,
+            Group       = user.Group,
+            Phone       = user.Phone,
+            Email       = user.Email,
+            AvatarPath  = user.AvatarPath,
+            AvatarUrl   = user.AvatarPath,
+            Description = user.Description,
+            Bio         = user.Description,
+            IsOnline    = user.IsOnline,
+            LastSeen    = user.LastSeen,
+            Token       = "",
+            FirstName   = person?.FirstName,
+            LastName    = person?.LastName,
+            MiddleName  = person?.MiddleName,
         });
     }
 
@@ -33,23 +47,32 @@ public class UsersController(AppDbContext db, FileService fileService) : Control
     public async Task<IActionResult> UpdateMe([FromBody] UpdateProfileRequest req)
     {
         var userId = GetUserId();
-        var user = await db.Users.FindAsync(userId);
+        var user   = await db.Users.FindAsync(userId);
         if (user == null) return NotFound();
 
-        if (req.Name != null) user.Name = req.Name;
-        if (req.Phone != null) user.Phone = req.Phone;
-        if (req.Email != null) user.Email = req.Email;
-        if (req.Bio != null) user.Description = req.Bio;
+        // Логин (user.Name) намеренно НЕ обновляется через этот эндпоинт,
+        // чтобы пользователь не мог случайно перезаписать его через поле «Имя».
+        if (req.Phone != null)      user.Phone       = req.Phone;
+        if (req.Email != null)      user.Email       = req.Email;
+        if (req.Bio != null)        user.Description = req.Bio;
         if (req.Description != null) user.Description = req.Description;
-        if (req.AvatarUrl != null) user.AvatarPath = req.AvatarUrl;
-        if (req.AvatarPath != null) user.AvatarPath = req.AvatarPath;
+        if (req.AvatarUrl != null)  user.AvatarPath  = req.AvatarUrl;
+        if (req.AvatarPath != null) user.AvatarPath  = req.AvatarPath;
 
         await db.SaveChangesAsync();
-        return Ok(new {
-            user.Id, user.Name, user.Role, user.Group, user.Phone,
+
+        var person = await db.People.FirstOrDefaultAsync(p => p.UserId == userId);
+        return Ok(new
+        {
+            user.Id,
+            Login      = user.Name,   // явный логин
+            Name       = user.Name,   // обратная совместимость
+            user.Role, user.Group, user.Phone, user.Email,
             AvatarPath = user.AvatarPath, AvatarUrl = user.AvatarPath,
             Description = user.Description, Bio = user.Description,
-            user.Email
+            FirstName  = person?.FirstName,
+            LastName   = person?.LastName,
+            MiddleName = person?.MiddleName,
         });
     }
 

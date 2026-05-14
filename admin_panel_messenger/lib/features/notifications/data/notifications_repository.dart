@@ -18,12 +18,33 @@ class NotificationsRepository {
     required String title,
     required String body,
     required String target,
+    String? imageUrl,
   }) async {
     try {
       await _apiClient.post<void>(
         '/api/admin/notifications',
-        data: {'title': title, 'body': body, 'target': target},
+        data: {
+          'title': title,
+          'body': body,
+          'target': target,
+          if (imageUrl != null && imageUrl.isNotEmpty) 'imageUrl': imageUrl,
+        },
       );
+    } on DioException catch (e) {
+      throw mapDioException(e);
+    }
+  }
+
+  Future<String> uploadAttachment(String fileName, List<int> bytes) async {
+    try {
+      final formData = FormData.fromMap({
+        'file': MultipartFile.fromBytes(bytes, filename: fileName),
+      });
+      final r = await _apiClient.postFormData<Map<String, dynamic>>(
+          '/api/admin/notifications/upload', formData);
+      final url = r.data?['url'] as String?;
+      if (url == null) throw const ApiException('Не удалось получить URL файла');
+      return url;
     } on DioException catch (e) {
       throw mapDioException(e);
     }

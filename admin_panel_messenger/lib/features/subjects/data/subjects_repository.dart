@@ -84,6 +84,19 @@ class SubjectsRepository {
     }
   }
 
+  Future<List<SubjectAssignment>> fetchSubjectAssignments(int subjectId) async {
+    try {
+      final r = await _apiClient.get<List<dynamic>>(
+          '/api/admin/subjects/$subjectId/assignments');
+      return (r.data ?? [])
+          .cast<Map<String, dynamic>>()
+          .map(SubjectAssignment.fromJson)
+          .toList();
+    } on DioException catch (e) {
+      throw mapDioException(e);
+    }
+  }
+
   Future<void> removeAssignment(int personId, int assignmentId) async {
     try {
       await _apiClient

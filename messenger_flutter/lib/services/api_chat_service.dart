@@ -8,6 +8,7 @@ import '../models.dart';
 import 'api_config.dart';
 import 'auth_service.dart';
 import 'chat_service.dart';
+import 'encryption_service.dart';
 
 /// Реализация [ChatService] для работы с удалённым сервером через REST API + SignalR.
 class ApiChatService implements ChatService {
@@ -77,6 +78,10 @@ class ApiChatService implements ChatService {
   Chat _chatFromJson(Map<String, dynamic> j) =>
       Chat.fromJson(j, currentUserId: _uid);
 
+  /// Парсит чат из JSON и расшифровывает тексты сообщений.
+  Future<Chat> _chatFromJsonDecrypted(Map<String, dynamic> j) =>
+      _decryptChat(_chatFromJson(j));
+
   // ── SignalR ───────────────────────────────────────────────────────────────
 
   void _connectSignalR() {
@@ -94,10 +99,12 @@ class ApiChatService implements ChatService {
       _hub!.on('ReceiveEvent', _onHubEvent);
       _hub!.onclose(({error}) => _scheduleReconnect());
 
-      _hub!.start()?.then((_) {
-        // Успешное подключение (в т.ч. после перезапуска сервера).
+      _hub!.start()?.then((_) async {
+        if (_disposed) return;
+        // Выполняем обмен ключами Диффи-Хеллмана (X25519) для шифрования сообщений.
+        await EncryptionService.instance.initAndExchange(_base, _headers);
         // Сигнализируем UI о восстановлении связи → перезагрузить список чатов.
-        if (!_disposed) _eventController.add(ConnectionRestored());
+        _eventController.add(ConnectionRestored());
       }).catchError((_) {
         _scheduleReconnect();
       });
@@ -113,26 +120,33 @@ class ApiChatService implements ChatService {
   }
 
   void _onHubEvent(List<Object?>? args) {
+    _processHubEvent(args); // fire-and-forget: async расшифровка не блокирует
+  }
+
+  Future<void> _processHubEvent(List<Object?>? args) async {
     try {
       final data = args?.first as Map<String, dynamic>?;
       if (data == null) return;
       final type = data['type'] as String;
       switch (type) {
         case 'message_received':
-          final chatId = data['chatId'] as String;
-          final msg = Message.fromJson(
-            data['message'] as Map<String, dynamic>,
-            currentUserId: _uid,
-          );
+          final chatId  = data['chatId'] as String;
+          var msgData   = data['message'] as Map<String, dynamic>;
+          // Расшифровываем текст сообщения
+          final rawText = msgData['text'] as String? ?? '';
+          final plain   = await EncryptionService.instance.decryptText(rawText);
+          msgData = Map<String, dynamic>.from(msgData)..['text'] = plain;
+          final msg = Message.fromJson(msgData, currentUserId: _uid);
           _eventController.add(MessageReceived(chatId, msg));
           // Сразу подтверждаем доставку отправителю (sent → delivered).
-          // Не делаем для собственных сообщений — isMe уже установлено fromJson.
           if (!msg.isMe) _markDelivered(chatId, msg.id);
         case 'message_edited':
+          final encNewText = data['newText'] as String;
+          final plainNew   = await EncryptionService.instance.decryptText(encNewText);
           _eventController.add(MessageEdited(
             data['chatId'] as String,
             data['messageId'] as String,
-            data['newText'] as String,
+            plainNew,
           ));
         case 'message_deleted':
           _eventController.add(MessageDeleted(
@@ -213,8 +227,19 @@ class ApiChatService implements ChatService {
 
   @override
   Future<List<Chat>> loadChats() async {
-    final list = await _getList('/chats');
-    return list.map((j) => _chatFromJson(j as Map<String, dynamic>)).toList();
+    final list  = await _getList('/chats');
+    final chats = list.map((j) => _chatFromJson(j as Map<String, dynamic>)).toList();
+    return Future.wait(chats.map(_decryptChat));
+  }
+
+  /// Расшифровывает текст всех сообщений в чате.
+  Future<Chat> _decryptChat(Chat chat) async {
+    if (!EncryptionService.instance.isReady) return chat;
+    final msgs = await Future.wait(
+      chat.messages.map((m) async =>
+          m.copyWith(text: await EncryptionService.instance.decryptText(m.text))),
+    );
+    return chat.copyWith(messages: msgs);
   }
 
   @override
@@ -239,6 +264,7 @@ class ApiChatService implements ChatService {
     String? senderGroup,
     ReplyInfo? replyTo,
     List<Mention> mentions = const [],
+    bool postAsCommunity = false,
   }) async {
     // Одиночный файл
     Attachment? uploaded = attachment;
@@ -259,17 +285,19 @@ class ApiChatService implements ChatService {
       }
     }
 
+    final encText = await EncryptionService.instance.encryptText(text);
     final body = <String, dynamic>{
-      'text': text,
+      'text': encText,
       if (uploaded != null && uploadedList == null) 'attachment': uploaded.toJson(),
       if (uploadedList != null && uploadedList.isNotEmpty)
         'attachments': uploadedList.map((a) => a.toJson()).toList(),
       if (replyTo != null) 'replyTo': replyTo.toJson(),
       if (mentions.isNotEmpty)
         'mentions': mentions.map((m) => m.toJson()).toList(),
+      if (postAsCommunity) 'postAsCommunity': true,
     };
     final data = await _post('/chats/$chatId/messages', body);
-    return _chatFromJson(data);
+    return _chatFromJsonDecrypted(data);
   }
 
   /// Заливает файл на сервер через POST /api/files/upload (multipart) и
@@ -385,8 +413,9 @@ class ApiChatService implements ChatService {
     required String messageId,
     required String newText,
   }) async {
-    final data = await _put('/chats/$chatId/messages/$messageId', {'text': newText});
-    return _chatFromJson(data);
+    final encText = await EncryptionService.instance.encryptText(newText);
+    final data = await _put('/chats/$chatId/messages/$messageId', {'text': encText});
+    return _chatFromJsonDecrypted(data);
   }
 
   @override
@@ -395,7 +424,7 @@ class ApiChatService implements ChatService {
     required List<String> messageIds,
   }) async {
     final data = await _delete('/chats/$chatId/messages', {'ids': messageIds});
-    return _chatFromJson(data);
+    return _chatFromJsonDecrypted(data);
   }
 
   @override
@@ -406,7 +435,7 @@ class ApiChatService implements ChatService {
     final data = await _post('/chats/$targetChatId/forward', {
       'messageIds': messages.map((m) => m.id).toList(),
     });
-    return _chatFromJson(data);
+    return _chatFromJsonDecrypted(data);
   }
 
   @override
@@ -415,7 +444,7 @@ class ApiChatService implements ChatService {
       'contactName': contactName,
       'isAcademic': isAcademic,
     });
-    return _chatFromJson(data);
+    return _chatFromJsonDecrypted(data);
   }
 
   @override
@@ -435,7 +464,7 @@ class ApiChatService implements ChatService {
       'isAcademic': isAcademic,
       if (description != null) 'description': description,
     });
-    return _chatFromJson(data);
+    return _chatFromJsonDecrypted(data);
   }
 
   @override
@@ -452,7 +481,7 @@ class ApiChatService implements ChatService {
       }
     }
     final data = await _put('/chats/${toSave.id}/settings', toSave.toJson());
-    return _chatFromJson(data);
+    return _chatFromJsonDecrypted(data);
   }
 
   /// Загружает аватар чата на сервер через POST /api/chats/{id}/avatar.
@@ -501,7 +530,7 @@ class ApiChatService implements ChatService {
       if (uploaded != null) 'attachment': uploaded.toJson(),
       if (replyTo != null) 'replyTo': replyTo.toJson(),
     });
-    return _chatFromJson(data);
+    return _chatFromJsonDecrypted(data);
   }
 
   @override
@@ -515,7 +544,7 @@ class ApiChatService implements ChatService {
       '/chats/$chatId/messages/$messageId/comments/$commentId',
       {'text': newText},
     );
-    return _chatFromJson(data);
+    return _chatFromJsonDecrypted(data);
   }
 
   @override
@@ -528,7 +557,7 @@ class ApiChatService implements ChatService {
       '/chats/$chatId/messages/$messageId/comments',
       {'ids': commentIds},
     );
-    return _chatFromJson(data);
+    return _chatFromJsonDecrypted(data);
   }
 
   @override
@@ -587,7 +616,7 @@ class ApiChatService implements ChatService {
     required String messageId,
   }) async {
     final data = await _post('/chats/$chatId/messages/$messageId/pin', {});
-    return _chatFromJson(data);
+    return _chatFromJsonDecrypted(data);
   }
 
   @override
@@ -596,7 +625,7 @@ class ApiChatService implements ChatService {
     required String messageId,
   }) async {
     final data = await _delete('/chats/$chatId/messages/$messageId/pin');
-    return _chatFromJson(data);
+    return _chatFromJsonDecrypted(data);
   }
 
   // ── Опросы ────────────────────────────────────────────────────────────────
@@ -619,7 +648,7 @@ class ApiChatService implements ChatService {
       'canChangeVote': canChangeVote,
       if (deadline != null) 'deadline': deadline.toIso8601String(),
     });
-    return _chatFromJson(data);
+    return _chatFromJsonDecrypted(data);
   }
 
   @override
@@ -632,7 +661,7 @@ class ApiChatService implements ChatService {
     final data = await _post('/chats/$chatId/polls/$messageId/vote', {
       'optionIds': optionIds,
     });
-    return _chatFromJson(data);
+    return _chatFromJsonDecrypted(data);
   }
 
   @override
@@ -641,7 +670,7 @@ class ApiChatService implements ChatService {
     required String messageId,
   }) async {
     final data = await _post('/chats/$chatId/polls/$messageId/close', {});
-    return _chatFromJson(data);
+    return _chatFromJsonDecrypted(data);
   }
 
   @override
@@ -676,6 +705,12 @@ class ApiChatService implements ChatService {
   }
 
   @override
+  Future<Chat> joinChat(String chatId) async {
+    final data = await _post('/chats/$chatId/join', {});
+    return _chatFromJsonDecrypted(data as Map<String, dynamic>);
+  }
+
+  @override
   Future<String?> getInviteLink(String chatId) async {
     try {
       final data = await _get('/chats/$chatId/invite-link');
@@ -692,6 +727,7 @@ class ApiChatService implements ChatService {
   Future<void> dispose() async {
     _disposed = true;
     _reconnectTimer?.cancel();
+    EncryptionService.instance.reset();
     await _hub?.stop();
     await _eventController.close();
   }

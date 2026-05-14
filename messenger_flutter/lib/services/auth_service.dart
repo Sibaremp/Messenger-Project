@@ -95,6 +95,7 @@ class AuthUser {
   }
 
   AuthUser copyWith({
+    String? login,
     String? name,
     String? phone,
     String? email,
@@ -103,7 +104,7 @@ class AuthUser {
     bool clearAvatar = false,
   }) => AuthUser(
     id:         id,
-    login:      login,
+    login:      login ?? this.login,
     name:       name ?? this.name,
     firstName:  firstName,
     lastName:   lastName,
@@ -159,6 +160,22 @@ class AuthService {
     'Content-Type': 'application/json',
     if (token != null) 'Authorization': 'Bearer $token',
   };
+
+  /// Загружает актуальные данные пользователя с сервера и обновляет кэш.
+  Future<void> refreshCurrentUser() async {
+    if (token == null) return;
+    try {
+      final resp = await http.get(
+        Uri.parse('${ApiConfig.baseUrl}/users/me'),
+        headers: authHeaders,
+      ).timeout(ApiConfig.httpTimeout);
+      if (resp.statusCode == 200) {
+        final data = jsonDecode(resp.body) as Map<String, dynamic>;
+        _currentUser = AuthUser.fromJson({...data, 'token': token!});
+        await _persistUser();
+      }
+    } catch (_) {}
+  }
 
   /// Попытка восстановить сессию из secure storage.
   Future<bool> tryRestoreSession() async {
@@ -251,6 +268,22 @@ class AuthService {
   }
 
   /// Обновление профиля на сервере.
+  Future<void> changeLogin(String newLogin, String password) async {
+    final response = await http.put(
+      Uri.parse('${ApiConfig.baseUrl}/auth/login'),
+      headers: authHeaders,
+      body: jsonEncode({'newLogin': newLogin, 'password': password}),
+    ).timeout(ApiConfig.httpTimeout);
+    if (response.statusCode == 409) throw AuthException('Этот логин уже занят');
+    if (response.statusCode == 400) {
+      final msg = (jsonDecode(response.body) as Map<String, dynamic>)['message'] as String? ?? 'Неверный пароль';
+      throw AuthException(msg);
+    }
+    if (response.statusCode != 200) throw AuthException('Ошибка смены логина');
+    _currentUser = _currentUser?.copyWith(login: newLogin, name: newLogin);
+    await _persistUser();
+  }
+
   Future<AuthUser> updateProfile({
     String? name,
     String? bio,

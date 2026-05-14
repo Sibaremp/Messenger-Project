@@ -6,17 +6,16 @@ import '../models.dart';
 import '../app_constants.dart';
 import '../services/chat_service.dart';
 import '../services/auth_service.dart' as svc;
-import '../services/api_config.dart' show ApiConfig;
+import '../services/local_cache_service.dart';
 import '../auth_screen.dart' show AuthScreen;
-import 'package:image_picker/image_picker.dart';
-import '../profile_screen.dart' show ProfileAvatar, UserProfile, ProfileRole;
-import '../services/sim_service.dart';
+import '../profile_screen.dart' show ProfileAvatar;
 import '../services/signaling_service.dart';
-import '../theme.dart' show ThemeProvider, AppThemeMode;
 import '../widgets/chat_widgets.dart';
+import '../widgets/member_picker.dart';
+import '../widgets/settings_overlay.dart' show MobileSettingsPage;
 import 'chat_screen.dart';
 import 'search_screen.dart';
-import 'devices_screen.dart';
+import '../utils/app_snack.dart';
 
 /// Главный мобильный экран с BottomNavigationBar (4 вкладки).
 /// Используется при ширине экрана < [AppSizes.desktopBreakpoint].
@@ -48,7 +47,7 @@ class _ChatListScreenState extends State<ChatListScreen>
   // ── Данные ──────────────────────────────────────────────────────
   String? _myAvatarPath;
   List<Chat> _chats = [];
-  late StreamSubscription<ChatEvent> _eventSub;
+  StreamSubscription<ChatEvent>? _eventSub;
 
   List<AppContact> _contacts = [];
 
@@ -65,51 +64,68 @@ class _ChatListScreenState extends State<ChatListScreen>
     super.initState();
     _academicTabCtrl = TabController(length: 2, vsync: this);
     _chatTabCtrl = TabController(length: 2, vsync: this);
-    // Обновляем FAB при переключении вкладок
-    _academicTabCtrl.addListener(() => setState(() {}));
-    _chatTabCtrl.addListener(() => setState(() {}));
-    _loadChats();
-    _loadAvatar();
-    _loadContacts();
-    _eventSub = widget.service.events.listen((event) {
+
+    // Все операции с setState откладываем до первого кадра,
+    // чтобы не попасть в фазу build (TabBarView синхронизирует
+    // TabController во время build и может вызвать listener).
+    WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
+
+      // Обновляем FAB при переключении вкладок.
+      // ВАЖНО: setState оборачиваем в addPostFrameCallback, иначе TabBarView
+      // может синхронно уведомить слушателей прямо внутри buildScope() —
+      // это вызывает "setState() called during build".
+      _academicTabCtrl.addListener(() {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted) setState(() {});
+        });
+      });
+      _chatTabCtrl.addListener(() {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted) setState(() {});
+        });
+      });
+
       _loadChats();
-      // Принудительный logout, если текущий сеанс завершён удалённо.
-      if (event is SessionTerminated && event.isCurrent) {
-        _logout();
-      }
-      // Уведомления: упоминания и ответы на сообщения текущего пользователя.
-      if (event is MessageReceived && !event.message.isMe) {
-        final myName = widget.auth.currentUser?.name ?? '';
-        final msg = event.message;
+      _loadAvatar();
+      _loadContacts();
 
-        // @упоминание (@ник или @all)
-        final mentioned = msg.mentions
-            .any((m) => m.username == myName || m.userId == 'all');
-        if (mentioned) {
-          setState(() {
-            _notifications.insert(0, _AppNotification(
-              type:       _NotifType.mention,
-              senderName: msg.senderName ?? 'Участник',
-              message:    msg.text,
-              time:       msg.time,
-            ));
-          });
+      _eventSub = widget.service.events.listen((event) {
+        if (!mounted) return;
+        _loadChats();
+        if (event is SessionTerminated && event.isCurrent) {
+          _logout();
         }
+        if (event is MessageReceived && !event.message.isMe) {
+          final myName = widget.auth.currentUser?.name ?? '';
+          final msg = event.message;
 
-        // Ответ на моё сообщение
-        final replyTo = msg.replyTo;
-        if (!mentioned && replyTo != null && replyTo.senderName == myName) {
-          setState(() {
-            _notifications.insert(0, _AppNotification(
-              type:       _NotifType.reply,
-              senderName: msg.senderName ?? 'Участник',
-              message:    msg.text,
-              time:       msg.time,
-            ));
-          });
+          final mentioned = msg.mentions
+              .any((m) => m.username == myName || m.userId == 'all');
+          if (mentioned) {
+            setState(() {
+              _notifications.insert(0, _AppNotification(
+                type:       _NotifType.mention,
+                senderName: msg.senderName ?? 'Участник',
+                message:    msg.text,
+                time:       msg.time,
+              ));
+            });
+          }
+
+          final replyTo = msg.replyTo;
+          if (!mentioned && replyTo != null && replyTo.senderName == myName) {
+            setState(() {
+              _notifications.insert(0, _AppNotification(
+                type:       _NotifType.reply,
+                senderName: msg.senderName ?? 'Участник',
+                message:    msg.text,
+                time:       msg.time,
+              ));
+            });
+          }
         }
-      }
+      });
     });
   }
 
@@ -117,19 +133,40 @@ class _ChatListScreenState extends State<ChatListScreen>
   void dispose() {
     _academicTabCtrl.dispose();
     _chatTabCtrl.dispose();
-    _eventSub.cancel();
+    _eventSub?.cancel();
     super.dispose();
   }
 
   Future<void> _loadChats() async {
-    final chats = await widget.service.loadChats();
-    if (mounted) setState(() => _chats = List.from(chats));
+    // Показываем кэшированные чаты мгновенно (до ответа сервера)
+    final uid = widget.auth.currentUser?.id ?? '';
+    final cached = await LocalCacheService.instance.loadCachedChats(currentUserId: uid);
+    if (mounted && cached.isNotEmpty && _chats.isEmpty) {
+      // Откладываем setState до конца текущего кадра, чтобы не попасть в build
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted && _chats.isEmpty) {
+          setState(() => _chats = List.from(cached));
+        }
+      });
+    }
+
+    try {
+      final chats = await widget.service.loadChats();
+      if (!mounted) return;
+      // Сохраняем актуальный список в кэш
+      unawaited(LocalCacheService.instance.saveChats(chats, currentUserId: uid));
+      setState(() => _chats = List.from(chats));
+    } catch (_) {
+      // Сервер недоступен — остаёмся на кэшированных данных
+    }
   }
 
   Future<void> _loadAvatar() async {
     final user = widget.auth.currentUser;
     if (user?.avatarUrl != null) {
-      if (mounted) setState(() => _myAvatarPath = user!.avatarUrl);
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) setState(() => _myAvatarPath = user!.avatarUrl);
+      });
     }
   }
 
@@ -141,6 +178,19 @@ class _ChatListScreenState extends State<ChatListScreen>
         _contacts = raw.map((j) => AppContact.fromJson(j)).toList();
       });
     } catch (_) {}
+  }
+
+  /// Отображаемое имя чата: для личных чатов — ФИО, иначе название группы.
+  String _chatDisplayName(Chat chat) {
+    if (chat.type != ChatType.direct) return chat.name;
+    final contactName =
+        _contacts.where((c) => c.name == chat.name).firstOrNull?.bestName;
+    if (contactName != null) return contactName;
+    final memberName = chat.members
+        .where((m) => m.name == chat.name)
+        .firstOrNull
+        ?.displayName;
+    return memberName ?? chat.name;
   }
 
   // ── Сортированные и фильтрованные списки ───────────────────────
@@ -226,8 +276,8 @@ class _ChatListScreenState extends State<ChatListScreen>
             ),
             const SizedBox(height: 8),
             ListTile(
-              leading: const CircleAvatar(
-                backgroundColor: AppColors.primary,
+              leading: CircleAvatar(
+                backgroundColor: Theme.of(context).colorScheme.primary,
                 child: Icon(Icons.group, color: AppColors.textLight),
               ),
               title: Text(
@@ -240,8 +290,8 @@ class _ChatListScreenState extends State<ChatListScreen>
               },
             ),
             ListTile(
-              leading: const CircleAvatar(
-                backgroundColor: AppColors.primary,
+              leading: CircleAvatar(
+                backgroundColor: Theme.of(context).colorScheme.primary,
                 child: Icon(Icons.campaign, color: AppColors.textLight),
               ),
               title: Text(
@@ -318,9 +368,7 @@ class _ChatListScreenState extends State<ChatListScreen>
             }
           } catch (e) {
             if (mounted) {
-              ScaffoldMessenger.of(context).showSnackBar(
-                SnackBar(content: Text('Ошибка: $e')),
-              );
+                            AppSnack.error(context, 'Ошибка: $e');
             }
           }
         },
@@ -365,107 +413,92 @@ class _ChatListScreenState extends State<ChatListScreen>
     ).then((_) => _loadChats());
   }
 
-  Widget _searchAction() => IconButton(
-        icon: const Icon(Icons.search),
-        onPressed: _openSearch,
-      );
 
-  Widget _avatarAction() => Padding(
-        padding: const EdgeInsets.only(right: 8),
-        child: GestureDetector(
-          onTap: () => setState(() => _bottomIndex = 3),
-          child: ProfileAvatar(avatarPath: _myAvatarPath, radius: 18),
-        ),
-      );
+  /// Возвращает только активную вкладку — исключает одновременную инициализацию
+  /// всех четырёх страниц в IndexedStack, которая приводила к
+  /// «setState during build» из дочерних initState.
+  Widget _buildCurrentPage() {
+    switch (_bottomIndex) {
+      case 0:
+        return _buildAcademicTab();
+      case 1:
+        return _buildChatTab();
+      case 2:
+        return _MobileNotificationsPage(
+          notifications: _notifications,
+          onMarkRead: (n) => setState(() => _notifications.remove(n)),
+          onMarkAllRead: () => setState(() => _notifications.clear()),
+        );
+      case 3:
+        return SafeArea(
+          bottom: false,
+          child: MobileSettingsPage(
+            auth: widget.auth,
+            service: widget.service,
+            onAvatarChanged: _loadAvatar,
+            onLogout: _logout,
+          ),
+        );
+      default:
+        return _buildChatTab();
+    }
+  }
 
-  TabBar _tabBar(TabController ctrl) => TabBar(
-        controller: ctrl,
-        indicatorColor: AppColors.primary,
-        labelColor: AppColors.primary,
-        unselectedLabelColor: AppColors.subtle,
-        labelStyle: const TextStyle(fontWeight: FontWeight.w600, fontSize: 14),
-        tabs: const [Tab(text: 'Личные'), Tab(text: 'Группы')],
-      );
-
-  /// Каждый ребёнок — самостоятельный Scaffold, чтобы AppBar и SafeArea
-  /// работали корректно для каждой вкладки.
   @override
   Widget build(BuildContext context) {
+    final primary = Theme.of(context).colorScheme.primary;
+    final isDark  = Theme.of(context).brightness == Brightness.dark;
     return Scaffold(
-      body: IndexedStack(
-        index: _bottomIndex,
-        children: [
-          // 0 — Академический
-          _buildAcademicTab(),
-          // 1 — Общение
-          _buildChatTab(),
-          // 2 — Уведомления
-          _MobileNotificationsPage(
-            notifications: _notifications,
-            onMarkRead: (n) => setState(() => _notifications.remove(n)),
-            onMarkAllRead: () => setState(() => _notifications.clear()),
-          ),
-          // 3 — Профиль
-          _MobileProfilePage(
-            auth: widget.auth,
-            onLogout: _logout,
-            onAvatarChanged: _loadAvatar,
-            service: widget.service,
-          ),
-        ],
-      ),
+      body: _buildCurrentPage(),
       floatingActionButton: _showFab
           ? FloatingActionButton(
               onPressed: _onFabPressed,
-              backgroundColor: AppColors.primary,
-              child: const Icon(Icons.add, color: AppColors.textLight),
+              backgroundColor: primary,
+              elevation: 3,
+              child: const Icon(Icons.edit_outlined, color: Colors.white, size: 22),
             )
           : null,
-      bottomNavigationBar: BottomNavigationBar(
-        currentIndex: _bottomIndex,
-        onTap: (i) {
+      bottomNavigationBar: NavigationBar(
+        selectedIndex: _bottomIndex,
+        onDestinationSelected: (i) {
           setState(() {
             _bottomIndex = i;
-            // Помечаем уведомления прочитанными при переходе на вкладку
             if (i == 2) {
-              for (final n in _notifications) {
-                n.read = true;
-              }
+              for (final n in _notifications) { n.read = true; }
             }
           });
         },
-        type: BottomNavigationBarType.fixed,
-        selectedItemColor: AppColors.primary,
-        unselectedItemColor: AppColors.subtle,
-        selectedFontSize: 12,
-        unselectedFontSize: 12,
-        items: [
-          const BottomNavigationBarItem(
+        backgroundColor:
+            isDark ? const Color(0xFF1C1C1E) : Colors.white,
+        surfaceTintColor: Colors.transparent,
+        indicatorColor: primary.withValues(alpha: 0.15),
+        labelBehavior: NavigationDestinationLabelBehavior.alwaysShow,
+        height: 64,
+        destinations: [
+          const NavigationDestination(
             icon: Icon(Icons.school_outlined),
-            activeIcon: Icon(Icons.school),
+            selectedIcon: Icon(Icons.school),
             label: 'Академический',
           ),
-          const BottomNavigationBarItem(
-            icon: Icon(Icons.chat_bubble_outline),
-            activeIcon: Icon(Icons.chat_bubble),
+          const NavigationDestination(
+            icon: Icon(Icons.chat_bubble_outline_rounded),
+            selectedIcon: Icon(Icons.chat_bubble_rounded),
             label: 'Общение',
           ),
-          BottomNavigationBarItem(
+          NavigationDestination(
             icon: Badge(
               isLabelVisible: _unreadNotifications > 0,
-              label: Text(
-                '$_unreadNotifications',
-                style: const TextStyle(fontSize: 10),
-              ),
-              child: const Icon(Icons.notifications_none),
+              label: Text('$_unreadNotifications',
+                  style: const TextStyle(fontSize: 10)),
+              child: const Icon(Icons.notifications_none_rounded),
             ),
-            activeIcon: const Icon(Icons.notifications),
+            selectedIcon: const Icon(Icons.notifications_rounded),
             label: 'Уведомления',
           ),
-          const BottomNavigationBarItem(
-            icon: Icon(Icons.person_outline),
-            activeIcon: Icon(Icons.person),
-            label: 'Профиль',
+          const NavigationDestination(
+            icon: Icon(Icons.settings_outlined),
+            selectedIcon: Icon(Icons.settings_rounded),
+            label: 'Настройки',
           ),
         ],
       ),
@@ -475,46 +508,19 @@ class _ChatListScreenState extends State<ChatListScreen>
   Widget _buildAcademicTab() {
     return SafeArea(
       bottom: false,
-      child: LayoutBuilder(
-        builder: (context, constraints) {
-          final isLandscape = constraints.maxHeight < 400;
-          return Column(
-            children: [
-              Material(
-                elevation: 2,
-                child: Column(
-                  children: [
-                    Padding(
-                      padding: EdgeInsets.fromLTRB(16, isLandscape ? 4 : 12, 4, 0),
-                      child: Row(
-                        children: [
-                          Expanded(
-                            child: Text('Академический',
-                                style: TextStyle(
-                                    fontSize: isLandscape ? 16 : 20,
-                                    fontWeight: FontWeight.bold)),
-                          ),
-                          _searchAction(),
-                          if (!isLandscape) _avatarAction(),
-                        ],
-                      ),
-                    ),
-                    _tabBar(_academicTabCtrl),
-                  ],
-                ),
-              ),
-              Expanded(
-                child: TabBarView(
-                  controller: _academicTabCtrl,
-                  children: [
-                    _buildChatList(_academicPersonal),
-                    _buildChatList(_academicGroups),
-                  ],
-                ),
-              ),
-            ],
-          );
-        },
+      child: Column(
+        children: [
+          _buildTabHeader('Академический', _academicTabCtrl),
+          Expanded(
+            child: TabBarView(
+              controller: _academicTabCtrl,
+              children: [
+                _buildChatList(_academicPersonal),
+                _buildChatList(_academicGroups),
+              ],
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -522,46 +528,140 @@ class _ChatListScreenState extends State<ChatListScreen>
   Widget _buildChatTab() {
     return SafeArea(
       bottom: false,
-      child: LayoutBuilder(
-        builder: (context, constraints) {
-          final isLandscape = constraints.maxHeight < 400;
-          return Column(
+      child: Column(
+        children: [
+          _buildTabHeader('Общение', _chatTabCtrl),
+          Expanded(
+            child: TabBarView(
+              controller: _chatTabCtrl,
+              children: [
+                _buildChatList(_regularPersonal),
+                _buildChatList(_regularGroups),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildTabHeader(String title, TabController ctrl) {
+    final isDark  = Theme.of(context).brightness == Brightness.dark;
+    final primary = Theme.of(context).colorScheme.primary;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        // ── Единая шапка: лого + название слева, поиск + аватар справа ──
+        Padding(
+          padding: const EdgeInsets.fromLTRB(14, 10, 6, 4),
+          child: Row(
             children: [
-              Material(
-                elevation: 2,
-                child: Column(
-                  children: [
-                    Padding(
-                      padding: EdgeInsets.fromLTRB(16, isLandscape ? 4 : 12, 4, 0),
-                      child: Row(
-                        children: [
-                          Expanded(
-                            child: Text('Общение',
-                                style: TextStyle(
-                                    fontSize: isLandscape ? 16 : 20,
-                                    fontWeight: FontWeight.bold)),
-                          ),
-                          _searchAction(),
-                          if (!isLandscape) _avatarAction(),
-                        ],
-                      ),
-                    ),
-                    _tabBar(_chatTabCtrl),
-                  ],
+              // Логотип
+              Image.asset(
+                'assets/images/logo.png',
+                width: 32,
+                height: 32,
+              ),
+              const SizedBox(width: 8),
+              // Название приложения
+              const Text(
+                'Caspian Messenger',
+                style: TextStyle(
+                  fontSize: 17,
+                  fontWeight: FontWeight.w700,
+                  letterSpacing: -0.2,
                 ),
               ),
-              Expanded(
-                child: TabBarView(
-                  controller: _chatTabCtrl,
-                  children: [
-                    _buildChatList(_regularPersonal),
-                    _buildChatList(_regularGroups),
-                  ],
+              const Spacer(),
+              // Поиск
+              IconButton(
+                icon: Icon(Icons.search_rounded, color: primary, size: 24),
+                onPressed: _openSearch,
+                splashRadius: 22,
+              ),
+              // Аватар / профиль
+              Padding(
+                padding: const EdgeInsets.only(right: 6),
+                child: GestureDetector(
+                  onTap: () => MobileSettingsPage.openProfilePage(
+                    context,
+                    auth: widget.auth,
+                    onAvatarChanged: _loadAvatar,
+                  ),
+                  child: ProfileAvatar(avatarPath: _myAvatarPath, radius: 18),
                 ),
               ),
             ],
-          );
-        },
+          ),
+        ),
+        // ── Pill-chips (Telegram folders style) ─────────────────────
+        SizedBox(
+          height: 38,
+          child: ListView(
+            scrollDirection: Axis.horizontal,
+            padding: const EdgeInsets.symmetric(horizontal: 16),
+            children: [
+              _tgTabChip('Личные', ctrl.index == 0, Icons.person_outline,
+                  () => _switchTab(ctrl, 0), primary, isDark),
+              const SizedBox(width: 8),
+              _tgTabChip('Группы', ctrl.index == 1, Icons.group_outlined,
+                  () => _switchTab(ctrl, 1), primary, isDark),
+            ],
+          ),
+        ),
+        const SizedBox(height: 6),
+      ],
+    );
+  }
+
+  void _switchTab(TabController ctrl, int index) {
+    ctrl.animateTo(index);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) setState(() {});
+    });
+  }
+
+  Widget _tgTabChip(String label, bool selected, IconData icon,
+      VoidCallback onTap, Color primary, bool isDark) {
+    return GestureDetector(
+      onTap: onTap,
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 180),
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+        decoration: BoxDecoration(
+          color: selected
+              ? primary.withValues(alpha: isDark ? 0.25 : 0.12)
+              : isDark
+                  ? Colors.white.withValues(alpha: 0.07)
+                  : Colors.black.withValues(alpha: 0.05),
+          borderRadius: BorderRadius.circular(20),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(icon,
+                size: 15,
+                color: selected
+                    ? primary
+                    : isDark
+                        ? Colors.white54
+                        : Colors.black45),
+            const SizedBox(width: 5),
+            Text(
+              label,
+              style: TextStyle(
+                fontSize: 14,
+                fontWeight:
+                    selected ? FontWeight.w600 : FontWeight.w400,
+                color: selected
+                    ? primary
+                    : isDark
+                        ? Colors.white60
+                        : Colors.black54,
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -581,154 +681,203 @@ class _ChatListScreenState extends State<ChatListScreen>
   // ── Общий список чатов ─────────────────────────────────────────
 
   Widget _buildChatList(List<Chat> chats) {
+    final isDark  = Theme.of(context).brightness == Brightness.dark;
+    final primary = Theme.of(context).colorScheme.primary;
+
     if (chats.isEmpty) {
-      return const Center(
-        child: Text('Нет чатов', style: TextStyle(color: AppColors.subtle)),
+      return Center(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Icons.chat_bubble_outline_rounded,
+                size: 64,
+                color: AppColors.subtle.withValues(alpha: 0.3)),
+            const SizedBox(height: 16),
+            Text('Нет чатов',
+                style: TextStyle(
+                    fontSize: 17,
+                    fontWeight: FontWeight.w600,
+                    color: isDark ? Colors.white38 : Colors.black38)),
+            const SizedBox(height: 6),
+            Text('Нажмите ✎ чтобы начать диалог',
+                style: TextStyle(
+                    fontSize: 13,
+                    color: isDark ? Colors.white24 : Colors.black26)),
+          ],
+        ),
       );
     }
+
     return ListView.builder(
+      padding: EdgeInsets.zero,
       itemCount: chats.length,
       itemBuilder: (context, index) {
-        final chat = chats[index];
-        return Column(
-          key: ValueKey(chat.id),
-          children: [
-            InkWell(
-              onTap: () async {
-                await Navigator.push(
-                  context,
-                  MaterialPageRoute(
-                    builder: (_) => ChatScreen(
-                      chat: chat,
-                      service: widget.service,
-                      onChatUpdated: _onChatUpdated,
-                      contacts: _contacts,
-                      auth: widget.auth,
-                      signalingService: widget.signalingService,
-                    ),
+        final chat     = chats[index];
+        final name     = _chatDisplayName(chat);
+        final hasUnread = chat.unreadCount > 0;
+        final isLastMsg = chat.messages.isNotEmpty;
+        final isMyLast  = isLastMsg && chat.messages.last.isMe;
+
+        return Material(
+          color: Colors.transparent,
+          child: InkWell(
+            key: ValueKey(chat.id),
+            onTap: () async {
+              await Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (_) => ChatScreen(
+                    chat: chat,
+                    service: widget.service,
+                    onChatUpdated: _onChatUpdated,
+                    contacts: _contacts,
+                    auth: widget.auth,
+                    signalingService: widget.signalingService,
                   ),
-                );
-                _loadChats();
-              },
-              child: Padding(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-                child: Row(
-                  children: [
-                    ChatAvatar(type: chat.type, avatarPath: chat.avatarPath, chatName: chat.name),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Row(
+                ),
+              );
+              _loadChats();
+            },
+            child: Column(
+              children: [
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(12, 6, 16, 6),
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.center,
+                    children: [
+                      // ── Аватар 54px ──────────────────────────────
+                      ChatAvatar(
+                          type: chat.type,
+                          avatarPath: chat.avatarPath,
+                          chatName: name),
+                      const SizedBox(width: 12),
+                      // ── Контент ──────────────────────────────────
+                      Expanded(
+                        child: SizedBox(
+                          height: 54,
+                          child: Column(
+                            mainAxisAlignment: MainAxisAlignment.spaceEvenly,
                             children: [
-                              Expanded(
-                                child: Text(
-                                  chat.name,
-                                  style: const TextStyle(
-                                    fontWeight: FontWeight.bold,
-                                    fontSize: 16,
-                                  ),
-                                ),
-                              ),
-                              if (chat.type != ChatType.direct) ...[
-                                if (chat.members.isNotEmpty)
-                                  Padding(
-                                    padding: const EdgeInsets.only(right: 6),
+                              // ── Строка 1: имя + время ─────────────
+                              Row(
+                                crossAxisAlignment: CrossAxisAlignment.baseline,
+                                textBaseline: TextBaseline.alphabetic,
+                                children: [
+                                  // Иконка типа (группа / канал)
+                                  if (chat.type == ChatType.group)
+                                    Padding(
+                                      padding: const EdgeInsets.only(right: 3),
+                                      child: Icon(Icons.group_rounded,
+                                          size: 14,
+                                          color: isDark
+                                              ? Colors.white38
+                                              : Colors.black38),
+                                    )
+                                  else if (chat.type == ChatType.community)
+                                    Padding(
+                                      padding: const EdgeInsets.only(right: 3),
+                                      child: Icon(Icons.campaign_rounded,
+                                          size: 14,
+                                          color: isDark
+                                              ? Colors.white38
+                                              : Colors.black38),
+                                    ),
+                                  Expanded(
                                     child: Text(
-                                      '${chat.members.length + 1}',
-                                      style: const TextStyle(
-                                        fontSize: 12,
-                                        color: AppColors.subtle,
-                                        fontWeight: FontWeight.w500,
+                                      name,
+                                      style: TextStyle(
+                                        fontWeight: FontWeight.w600,
+                                        fontSize: 16,
+                                        color: isDark
+                                            ? Colors.white
+                                            : Colors.black87,
+                                      ),
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                    ),
+                                  ),
+                                  const SizedBox(width: 4),
+                                  if (isMyLast) ...[
+                                    _statusIcon(chat.messages.last.status),
+                                    const SizedBox(width: 3),
+                                  ],
+                                  Text(
+                                    formatChatTime(chat.lastTime),
+                                    style: TextStyle(
+                                      fontSize: 12,
+                                      color: hasUnread
+                                          ? primary
+                                          : AppColors.subtle,
+                                      fontWeight: hasUnread
+                                          ? FontWeight.w600
+                                          : FontWeight.normal,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                              // ── Строка 2: превью + бейдж ──────────
+                              Row(
+                                children: [
+                                  Expanded(
+                                    child: Text(
+                                      chat.lastMessage,
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: TextStyle(
+                                        fontSize: 14,
+                                        color: isDark
+                                            ? Colors.white54
+                                            : Colors.black54,
                                       ),
                                     ),
                                   ),
-                                Container(
-                                  padding: const EdgeInsets.symmetric(
-                                      horizontal: 6, vertical: 2),
-                                  decoration: BoxDecoration(
-                                    color: AppColors.primary
-                                        .withValues(alpha: 0.12),
-                                    borderRadius: BorderRadius.circular(8),
-                                  ),
-                                  child: Text(
-                                    chat.type == ChatType.group
-                                        ? 'Группа'
-                                        : 'Сообщество',
-                                    style: const TextStyle(
-                                      fontSize: 10,
-                                      color: AppColors.primary,
-                                      fontWeight: FontWeight.w600,
+                                  if (hasUnread) ...[
+                                    const SizedBox(width: 8),
+                                    Container(
+                                      constraints:
+                                          const BoxConstraints(minWidth: 22),
+                                      padding: const EdgeInsets.symmetric(
+                                          horizontal: 7, vertical: 2),
+                                      decoration: BoxDecoration(
+                                        color: primary,
+                                        borderRadius: BorderRadius.circular(12),
+                                      ),
+                                      child: Text(
+                                        chat.unreadCount > 99
+                                            ? '99+'
+                                            : '${chat.unreadCount}',
+                                        style: const TextStyle(
+                                          color: Colors.white,
+                                          fontSize: 12,
+                                          fontWeight: FontWeight.w700,
+                                        ),
+                                        textAlign: TextAlign.center,
+                                      ),
                                     ),
-                                  ),
-                                ),
-                              ],
-                            ],
-                          ),
-                          const SizedBox(height: 4),
-                          Row(
-                            children: [
-                              if (chat.messages.isNotEmpty && chat.messages.last.isMe) ...[
-                                _statusIcon(chat.messages.last.status),
-                                const SizedBox(width: 3),
-                              ],
-                              Expanded(
-                                child: Text(
-                                  chat.lastMessage,
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
-                                  style: const TextStyle(color: AppColors.subtle),
-                                ),
+                                  ],
+                                ],
                               ),
                             ],
                           ),
-                        ],
-                      ),
-                    ),
-                    const SizedBox(width: 8),
-                    // Правая колонка: время + бейдж непрочитанных
-                    Column(
-                      crossAxisAlignment: CrossAxisAlignment.end,
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Text(
-                          formatChatTime(chat.lastTime),
-                          style: const TextStyle(
-                              fontSize: 12, color: AppColors.subtle),
                         ),
-                        if (chat.unreadCount > 0) ...[
-                          const SizedBox(height: 4),
-                          Container(
-                            padding: const EdgeInsets.symmetric(
-                                horizontal: 6, vertical: 2),
-                            constraints: const BoxConstraints(minWidth: 20),
-                            decoration: BoxDecoration(
-                              color: AppColors.primary,
-                              borderRadius: BorderRadius.circular(10),
-                            ),
-                            child: Text(
-                              chat.unreadCount > 99
-                                  ? '99+'
-                                  : '${chat.unreadCount}',
-                              style: const TextStyle(
-                                color: Colors.white,
-                                fontSize: 11,
-                                fontWeight: FontWeight.bold,
-                              ),
-                              textAlign: TextAlign.center,
-                            ),
-                          ),
-                        ],
-                      ],
-                    ),
-                  ],
+                      ),
+                    ],
+                  ),
                 ),
-              ),
+                // Разделитель от аватара, как в Telegram
+                Padding(
+                  padding: const EdgeInsets.only(left: 78),
+                  child: Divider(
+                    height: 0.5,
+                    thickness: 0.5,
+                    color: isDark
+                        ? Colors.white.withValues(alpha: 0.07)
+                        : Colors.black.withValues(alpha: 0.06),
+                  ),
+                ),
+              ],
             ),
-            Divider(height: 1, color: Colors.grey[300]),
-          ],
+          ),
         );
       },
     );
@@ -781,43 +930,27 @@ class _MobileNotificationsPageState extends State<_MobileNotificationsPage> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // Заголовок
-          Material(
-            elevation: 2,
-            child: Container(
-              width: double.infinity,
-              padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
-              child: const Text('Уведомления',
-                  style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
-            ),
-          ),
-          // Подзаголовок
+          // ── Заголовок в стиле Telegram ────────────────────────────
           Padding(
-            padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
-            child: Text(
-              'Следите за актуальными данными преподавателей',
-              style: TextStyle(fontSize: 13, color: AppColors.subtle),
-            ),
-          ),
-          // Фильтры
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+            padding: const EdgeInsets.fromLTRB(20, 14, 12, 8),
             child: Row(
               children: [
-                _buildFilterChip('Все', _selectedFilter == 0,
-                    () => setState(() => _selectedFilter = 0)),
-                const SizedBox(width: 8),
-                _buildFilterChip('За сутки', _selectedFilter == 1,
-                    () => setState(() => _selectedFilter = 1)),
-                const Spacer(),
+                const Expanded(
+                  child: Text('Уведомления',
+                      style: TextStyle(
+                          fontSize: 28,
+                          fontWeight: FontWeight.w700,
+                          letterSpacing: -0.5)),
+                ),
                 if (widget.notifications.isNotEmpty)
                   TextButton.icon(
                     onPressed: _markAllRead,
-                    icon: const Icon(Icons.done_all, size: 16),
-                    label: const Text('Прочитать все',
-                        style: TextStyle(fontSize: 12)),
+                    icon: const Icon(Icons.done_all_rounded, size: 16),
+                    label: const Text('Все прочитаны',
+                        style: TextStyle(fontSize: 13)),
                     style: TextButton.styleFrom(
-                      foregroundColor: AppColors.primary,
+                      foregroundColor:
+                          Theme.of(context).colorScheme.primary,
                       padding: const EdgeInsets.symmetric(horizontal: 8),
                       minimumSize: Size.zero,
                     ),
@@ -825,11 +958,25 @@ class _MobileNotificationsPageState extends State<_MobileNotificationsPage> {
               ],
             ),
           ),
+          // ── Фильтр-чипсы ─────────────────────────────────────────
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 0, 16, 10),
+            child: Row(
+              children: [
+                _buildFilterChip('Все', _selectedFilter == 0,
+                    () => setState(() => _selectedFilter = 0)),
+                const SizedBox(width: 8),
+                _buildFilterChip('За сутки', _selectedFilter == 1,
+                    () => setState(() => _selectedFilter = 1)),
+              ],
+            ),
+          ),
           Divider(
-            height: 1,
+            height: 0.5,
+            thickness: 0.5,
             color: isDark
-                ? Colors.white.withValues(alpha: 0.1)
-                : Colors.grey.withValues(alpha: 0.2),
+                ? Colors.white.withValues(alpha: 0.08)
+                : Colors.black.withValues(alpha: 0.07),
           ),
           // Список
           Expanded(
@@ -860,11 +1007,11 @@ class _MobileNotificationsPageState extends State<_MobileNotificationsPage> {
                           alignment: Alignment.centerRight,
                           padding: const EdgeInsets.symmetric(horizontal: 20),
                           decoration: BoxDecoration(
-                            color: AppColors.primary.withValues(alpha: 0.15),
+                            color: Theme.of(context).colorScheme.primary.withValues(alpha: 0.15),
                             borderRadius: BorderRadius.circular(8),
                           ),
-                          child: const Icon(Icons.done_all,
-                              color: AppColors.primary),
+                          child: Icon(Icons.done_all,
+                              color: Theme.of(context).colorScheme.primary),
                         ),
                         child: _buildNotificationCard(n, isDark),
                       );
@@ -877,25 +1024,31 @@ class _MobileNotificationsPageState extends State<_MobileNotificationsPage> {
   }
 
   Widget _buildFilterChip(String label, bool selected, VoidCallback onTap) {
+    final isDark  = Theme.of(context).brightness == Brightness.dark;
+    final primary = Theme.of(context).colorScheme.primary;
     return GestureDetector(
       onTap: onTap,
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 180),
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 7),
         decoration: BoxDecoration(
-          color: selected ? AppColors.primary : Colors.transparent,
-          borderRadius: BorderRadius.circular(16),
-          border: Border.all(
-            color: selected
-                ? AppColors.primary
-                : AppColors.subtle.withValues(alpha: 0.3),
-          ),
+          color: selected
+              ? primary.withValues(alpha: isDark ? 0.25 : 0.12)
+              : isDark
+                  ? Colors.white.withValues(alpha: 0.07)
+                  : Colors.black.withValues(alpha: 0.05),
+          borderRadius: BorderRadius.circular(20),
         ),
         child: Text(
           label,
           style: TextStyle(
-            fontSize: 12,
-            fontWeight: FontWeight.w600,
-            color: selected ? Colors.white : AppColors.subtle,
+            fontSize: 14,
+            fontWeight: selected ? FontWeight.w600 : FontWeight.w400,
+            color: selected
+                ? primary
+                : isDark
+                    ? Colors.white60
+                    : Colors.black54,
           ),
         ),
       ),
@@ -904,7 +1057,7 @@ class _MobileNotificationsPageState extends State<_MobileNotificationsPage> {
 
   Widget _buildNotificationCard(_AppNotification n, bool isDark) {
     final isMention = n.type == _NotifType.mention;
-    final accentColor = isMention ? AppColors.primary : Colors.teal;
+    final accentColor = isMention ? Theme.of(context).colorScheme.primary : Colors.teal;
     final typeIcon   = isMention ? Icons.alternate_email : Icons.reply;
     final typeLabel  = isMention ? 'Упоминание' : 'Ответ на сообщение';
 
@@ -1024,776 +1177,6 @@ class _AppNotification {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// Мобильная страница профиля (встроена в IndexedStack)
-// ═══════════════════════════════════════════════════════════════════════════════
-
-class _MobileProfilePage extends StatefulWidget {
-  final svc.AuthService auth;
-  final VoidCallback onLogout;
-  final VoidCallback onAvatarChanged;
-
-  /// ChatService для передачи в экран управления устройствами.
-  final ChatService service;
-
-  const _MobileProfilePage({
-    required this.auth,
-    required this.onLogout,
-    required this.onAvatarChanged,
-    required this.service,
-  });
-
-  @override
-  State<_MobileProfilePage> createState() => _MobileProfilePageState();
-}
-
-class _MobileProfilePageState extends State<_MobileProfilePage> {
-  UserProfile? _profile;
-  bool _simLoading = false;
-
-  @override
-  void initState() {
-    super.initState();
-    _loadProfile();
-  }
-
-  void _loadProfile() {
-    final user = widget.auth.currentUser;
-    if (user == null) return;
-    setState(() {
-      _profile = UserProfile(
-        name: user.name,
-        login: user.name,
-        bio: user.bio ?? '',
-        avatarPath: user.avatarUrl,
-        group: user.group,
-        phone: user.phone,
-        role: user.isTeacher ? ProfileRole.teacher : ProfileRole.student,
-      );
-    });
-  }
-
-  // ─── Сохранение поля на сервере ─────────────────────────────────────────────
-
-  Future<void> _saveField({
-    String? name, String? bio, String? phone, bool? clearPhone,
-    String? avatarPath, bool? clearAvatar,
-  }) async {
-    try {
-      // Если пришёл локальный путь аватарки — сначала заливаем на сервер.
-      String? resolvedAvatar = avatarPath;
-      if (clearAvatar != true &&
-          avatarPath != null &&
-          avatarPath.isNotEmpty &&
-          !ApiConfig.isServerMediaPath(avatarPath)) {
-        resolvedAvatar = await widget.auth.uploadAvatar(avatarPath);
-      }
-      await widget.auth.updateProfile(
-        name: name,
-        bio: bio,
-        phone: clearPhone == true ? '' : phone,
-        avatarUrl: clearAvatar == true ? '' : resolvedAvatar,
-      );
-      if (!mounted) return;
-      _loadProfile();
-      widget.onAvatarChanged();
-    } catch (_) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Ошибка сохранения'), behavior: SnackBarBehavior.floating),
-      );
-    }
-  }
-
-  // ─── Редактирование текстового поля через диалог ──────────────────────────
-
-  Future<void> _editTextField({
-    required String title,
-    required String current,
-    required String hint,
-    int maxLength = 32,
-    int maxLines = 1,
-    TextInputType keyboardType = TextInputType.text,
-    required Future<void> Function(String value) onSave,
-  }) async {
-    final ctrl = TextEditingController(text: current);
-    final isDark = Theme.of(context).brightness == Brightness.dark;
-    final result = await showModalBottomSheet<String>(
-      context: context,
-      isScrollControlled: true,
-      shape: const RoundedRectangleBorder(
-          borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
-      builder: (ctx) => Padding(
-        padding: EdgeInsets.fromLTRB(20, 16, 20,
-            MediaQuery.of(ctx).viewInsets.bottom + 20),
-        child: Column(mainAxisSize: MainAxisSize.min, children: [
-          Container(width: 40, height: 4,
-              decoration: BoxDecoration(
-                  color: Colors.grey[400],
-                  borderRadius: BorderRadius.circular(2))),
-          const SizedBox(height: 16),
-          Row(children: [
-            Expanded(child: Text(title,
-                style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w700))),
-            TextButton(
-              onPressed: () => Navigator.pop(ctx, ctrl.text),
-              child: const Text('Готово',
-                  style: TextStyle(color: AppColors.primary,
-                      fontWeight: FontWeight.w700, fontSize: 15)),
-            ),
-          ]),
-          const SizedBox(height: 12),
-          TextField(
-            controller: ctrl,
-            autofocus: true,
-            maxLength: maxLength,
-            maxLines: maxLines,
-            keyboardType: maxLines > 1 ? TextInputType.multiline : keyboardType,
-            textInputAction: maxLines > 1 ? TextInputAction.newline : TextInputAction.done,
-            onSubmitted: maxLines == 1 ? (v) => Navigator.pop(ctx, v) : null,
-            decoration: InputDecoration(
-              hintText: hint,
-              filled: true,
-              fillColor: isDark ? const Color(0xFF2A2A2A) : const Color(0xFFF5F5F5),
-              border: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(12),
-                  borderSide: BorderSide.none),
-              focusedBorder: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(12),
-                  borderSide: const BorderSide(color: AppColors.primary, width: 1.5)),
-            ),
-          ),
-        ]),
-      ),
-    );
-    if (result != null && result.trim() != current.trim()) {
-      await onSave(result.trim());
-    }
-  }
-
-  // ─── Аватар ────────────────────────────────────────────────────────────────
-
-  Future<void> _pickAvatar(ImageSource source) async {
-    final picked = await ImagePicker().pickImage(
-      source: source, maxWidth: 512, maxHeight: 512, imageQuality: 85);
-    if (picked != null && mounted) {
-      await _saveField(avatarPath: picked.path);
-    }
-  }
-
-  void _showAvatarOptions() {
-    final isDark = Theme.of(context).brightness == Brightness.dark;
-    showModalBottomSheet(
-      context: context,
-      shape: const RoundedRectangleBorder(
-          borderRadius: BorderRadius.vertical(top: Radius.circular(16))),
-      builder: (_) => SafeArea(
-        child: Column(mainAxisSize: MainAxisSize.min, children: [
-          const SizedBox(height: 8),
-          Container(width: 40, height: 4,
-              decoration: BoxDecoration(
-                  color: Colors.grey[300],
-                  borderRadius: BorderRadius.circular(2))),
-          const SizedBox(height: 8),
-          ListTile(
-            leading: const CircleAvatar(
-                backgroundColor: AppColors.primary,
-                child: Icon(Icons.camera_alt, color: Colors.white, size: 20)),
-            title: const Text('Сделать фото'),
-            onTap: () { Navigator.pop(context); _pickAvatar(ImageSource.camera); },
-          ),
-          ListTile(
-            leading: const CircleAvatar(
-                backgroundColor: AppColors.primary,
-                child: Icon(Icons.photo_library, color: Colors.white, size: 20)),
-            title: const Text('Выбрать из галереи'),
-            onTap: () { Navigator.pop(context); _pickAvatar(ImageSource.gallery); },
-          ),
-          if (_profile?.avatarPath != null)
-            ListTile(
-              leading: CircleAvatar(
-                  backgroundColor: isDark ? const Color(0xFF2A2A2A) : const Color(0xFFEEEEEE),
-                  child: const Icon(Icons.delete_outline, color: Colors.red, size: 20)),
-              title: const Text('Удалить фото', style: TextStyle(color: Colors.red)),
-              onTap: () {
-                Navigator.pop(context);
-                _saveField(clearAvatar: true, avatarPath: null);
-              },
-            ),
-          const SizedBox(height: 8),
-        ]),
-      ),
-    );
-  }
-
-  // ─── Телефон из SIM ────────────────────────────────────────────────────────
-
-  Future<void> _fillFromSim() async {
-    setState(() => _simLoading = true);
-    final result = await SimService.fetchSimCards();
-    if (!mounted) return;
-    setState(() => _simLoading = false);
-    if (result.status == SimResult.success) {
-      final sims = result.simCards;
-      if (sims.length == 1 && sims.first.phoneNumber?.isNotEmpty == true) {
-        await _saveField(phone: sims.first.phoneNumber!);
-      }
-    }
-  }
-
-  // ─── Управление устройствами ───────────────────────────────────────────────
-
-  void _openDevices() {
-    Navigator.push(
-      context,
-      MaterialPageRoute(
-        builder: (_) => DevicesScreen(
-          auth: widget.auth,
-          events: widget.service.events,
-          onLogout: widget.onLogout,
-        ),
-      ),
-    );
-  }
-
-  // ─── Выход ─────────────────────────────────────────────────────────────────
-
-  Future<void> _logout() async {
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Выход'),
-        content: const Text('Вы уверены, что хотите выйти из аккаунта?'),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx, false),
-              child: const Text('Отмена')),
-          TextButton(onPressed: () => Navigator.pop(ctx, true),
-              child: const Text('Выйти', style: TextStyle(color: Colors.red))),
-        ],
-      ),
-    );
-    if (confirmed == true) widget.onLogout();
-  }
-
-  // ═══════════════════════════════════════════════════════════════════════════
-  // Build
-  // ═══════════════════════════════════════════════════════════════════════════
-
-  @override
-  Widget build(BuildContext context) {
-    final isDark = Theme.of(context).brightness == Brightness.dark;
-    final p = _profile;
-
-    return SafeArea(
-      bottom: false,
-      child: p == null
-          ? const Center(
-              child: CircularProgressIndicator(color: AppColors.primary))
-          : _buildPage(p, isDark),
-    );
-  }
-
-  Widget _buildPage(UserProfile p, bool isDark) {
-    return ListView(
-      padding: EdgeInsets.zero,
-      children: [
-        // Заголовок
-        const Padding(
-          padding: EdgeInsets.fromLTRB(16, 12, 16, 8),
-          child: Text('Профиль',
-              style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
-        ),
-
-        // Шапка: аватар (нажимаемый) + имя + бейджи
-        _buildHeader(p, isDark),
-        const SizedBox(height: 16),
-
-        // Тема
-        _buildThemeCard(isDark),
-        const SizedBox(height: 12),
-
-        // Личные данные — каждое поле нажимаемое
-        _buildEditableInfoCard(p, isDark),
-        const SizedBox(height: 12),
-
-        // Устройства
-        _card(isDark: isDark,
-          child: _actionRow(
-            icon: Icons.devices_outlined, label: 'Управление устройствами',
-            color: AppColors.primary, isDark: isDark, onTap: _openDevices,
-          ),
-        ),
-        const SizedBox(height: 12),
-
-        // Выйти
-        _card(isDark: isDark,
-          child: _actionRow(
-            icon: Icons.logout, label: 'Выйти из аккаунта',
-            color: Colors.red, isDark: isDark, onTap: _logout,
-          ),
-        ),
-        const SizedBox(height: 32),
-      ],
-    );
-  }
-
-  // ═══════════════════════════════════════════════════════════════════════════
-  // Шапка
-  // ═══════════════════════════════════════════════════════════════════════════
-
-  Widget _buildHeader(UserProfile p, bool isDark) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 12),
-      child: Column(
-        children: [
-          // Нажимаемый аватар
-          GestureDetector(
-            onTap: _showAvatarOptions,
-            child: Stack(
-              children: [
-                ProfileAvatar(avatarPath: p.avatarPath, radius: 48),
-                Positioned(
-                  bottom: 0, right: 0,
-                  child: Container(
-                    width: 30, height: 30,
-                    decoration: BoxDecoration(
-                      color: AppColors.primary,
-                      shape: BoxShape.circle,
-                      border: Border.all(
-                        color: isDark ? const Color(0xFF121212) : const Color(0xFFF5F5F5),
-                        width: 2.5),
-                    ),
-                    child: const Icon(Icons.camera_alt, size: 14, color: Colors.white),
-                  ),
-                ),
-              ],
-            ),
-          ),
-          const SizedBox(height: 12),
-          Text(
-            p.name.isNotEmpty ? p.name : 'Пользователь',
-            style: TextStyle(
-              fontSize: 22, fontWeight: FontWeight.w700,
-              color: isDark ? Colors.white : Colors.black87,
-            ),
-          ),
-          const SizedBox(height: 2),
-          Text(p.login, style: TextStyle(
-              fontSize: 14, color: isDark ? Colors.white54 : Colors.black45)),
-          const SizedBox(height: 8),
-          Row(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              _badge(p.roleLabel,
-                  p.role == ProfileRole.teacher ? AppColors.primary : Colors.blue),
-              if (p.group != null && p.group!.isNotEmpty) ...[
-                const SizedBox(width: 8),
-                _badge(p.group!, isDark ? Colors.white54 : Colors.black54,
-                    filled: false, isDark: isDark),
-              ],
-            ],
-          ),
-          if (p.bio.isNotEmpty) ...[
-            const SizedBox(height: 10),
-            Text(p.bio, textAlign: TextAlign.center,
-                style: TextStyle(fontSize: 14, height: 1.4,
-                    color: isDark ? Colors.white70 : Colors.black54)),
-          ],
-        ],
-      ),
-    );
-  }
-
-  Widget _badge(String text, Color color,
-      {bool filled = true, bool isDark = false}) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
-      decoration: BoxDecoration(
-        color: filled ? color.withValues(alpha: 0.12)
-            : isDark ? Colors.white.withValues(alpha: 0.08)
-                     : Colors.black.withValues(alpha: 0.05),
-        borderRadius: BorderRadius.circular(8),
-      ),
-      child: Text(text, style: TextStyle(
-        fontSize: 12, fontWeight: FontWeight.w600,
-        color: filled ? color : (isDark ? Colors.white54 : Colors.black54),
-      )),
-    );
-  }
-
-  // ═══════════════════════════════════════════════════════════════════════════
-  // Тема
-  // ═══════════════════════════════════════════════════════════════════════════
-
-  Widget _buildThemeCard(bool isDark) {
-    final provider = ThemeProvider.of(context);
-    final current = provider.mode;
-    return _card(isDark: isDark, padding: const EdgeInsets.all(16),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          _cardTitle(Icons.brightness_6_outlined, 'Тема оформления', isDark),
-          const SizedBox(height: 14),
-          Row(children: [
-            _themeChip(Icons.light_mode, 'Светлая', current == AppThemeMode.light,
-                isDark, () => provider.setMode(AppThemeMode.light)),
-            const SizedBox(width: 8),
-            _themeChip(Icons.dark_mode, 'Тёмная', current == AppThemeMode.dark,
-                isDark, () => provider.setMode(AppThemeMode.dark)),
-            const SizedBox(width: 8),
-            _themeChip(Icons.brightness_auto, 'Авто', current == AppThemeMode.system,
-                isDark, () => provider.setMode(AppThemeMode.system)),
-          ]),
-        ],
-      ),
-    );
-  }
-
-  Widget _themeChip(IconData icon, String label, bool selected, bool isDark,
-      VoidCallback onTap) {
-    return Expanded(
-      child: GestureDetector(
-        onTap: onTap,
-        child: AnimatedContainer(
-          duration: const Duration(milliseconds: 200),
-          padding: const EdgeInsets.symmetric(vertical: 10),
-          decoration: BoxDecoration(
-            color: selected ? AppColors.primary
-                : isDark ? Colors.white.withValues(alpha: 0.06)
-                         : Colors.black.withValues(alpha: 0.04),
-            borderRadius: BorderRadius.circular(10),
-            border: Border.all(
-              color: selected ? AppColors.primary
-                  : isDark ? Colors.white12 : Colors.black12),
-          ),
-          child: Column(children: [
-            Icon(icon, size: 20,
-                color: selected ? Colors.white
-                    : isDark ? Colors.white54 : Colors.black45),
-            const SizedBox(height: 4),
-            Text(label, style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600,
-                color: selected ? Colors.white
-                    : isDark ? Colors.white54 : Colors.black45)),
-          ]),
-        ),
-      ),
-    );
-  }
-
-  // ═══════════════════════════════════════════════════════════════════════════
-  // Редактируемые поля (inline‑tap)
-  // ═══════════════════════════════════════════════════════════════════════════
-
-  Widget _buildEditableInfoCard(UserProfile p, bool isDark) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Padding(
-          padding: const EdgeInsets.fromLTRB(20, 4, 16, 8),
-          child: Text('Личные данные', style: TextStyle(
-              fontSize: 14, fontWeight: FontWeight.w600, color: AppColors.primary)),
-        ),
-        _card(isDark: isDark, child: Column(children: [
-          // Имя — нажать для редактирования
-          _editableRow(
-            icon: Icons.person_outline,
-            label: 'Имя',
-            value: p.name.isNotEmpty ? p.name : 'Не указано',
-            isEmpty: p.name.isEmpty,
-            isDark: isDark,
-            onTap: () => _editTextField(
-              title: 'Имя',
-              current: p.name,
-              hint: 'Введите имя',
-              maxLength: 32,
-              onSave: (v) async {
-                if (v.isEmpty) {
-                  ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-                    content: Text('Имя не может быть пустым'),
-                    behavior: SnackBarBehavior.floating,
-                  ));
-                  return;
-                }
-                await _saveField(name: v);
-              },
-            ),
-          ),
-          _divider(isDark),
-
-          // Логин — read-only, замочек
-          _infoRow(
-            icon: Icons.alternate_email,
-            label: 'Логин',
-            value: p.login,
-            isDark: isDark,
-            trailing: const Icon(Icons.lock_outline, size: 15, color: AppColors.subtle),
-          ),
-          _divider(isDark),
-
-          // О себе
-          _editableRow(
-            icon: Icons.info_outline,
-            label: 'О себе',
-            value: p.bio.isNotEmpty ? p.bio : 'Не указано',
-            isEmpty: p.bio.isEmpty,
-            isDark: isDark,
-            onTap: () => _editTextField(
-              title: 'О себе',
-              current: p.bio,
-              hint: 'Расскажите немного о себе...',
-              maxLength: 120,
-              maxLines: 3,
-              onSave: (v) => _saveField(bio: v),
-            ),
-          ),
-          _divider(isDark),
-
-          // Телефон (только через SIM)
-          _readOnlyRow(
-            icon: Icons.phone_outlined,
-            label: 'Телефон',
-            value: p.phone != null && p.phone!.isNotEmpty ? p.phone! : 'Не указан',
-            isEmpty: p.phone == null || p.phone!.isEmpty,
-            isDark: isDark,
-            trailing: SimService.isSupported
-                ? (_simLoading
-                    ? const SizedBox(width: 18, height: 18,
-                        child: CircularProgressIndicator(strokeWidth: 2))
-                    : GestureDetector(
-                        onTap: _fillFromSim,
-                        child: Container(
-                          padding: const EdgeInsets.all(4),
-                          decoration: BoxDecoration(
-                            color: AppColors.primary.withValues(alpha: 0.1),
-                            borderRadius: BorderRadius.circular(6)),
-                          child: const Icon(Icons.sim_card_outlined,
-                              color: AppColors.primary, size: 16),
-                        ),
-                      ))
-                : null,
-          ),
-          _divider(isDark),
-
-          // Учебная группа (только чтение)
-          _readOnlyRow(
-            icon: Icons.school_outlined,
-            label: 'Учебная группа',
-            value: p.group != null && p.group!.isNotEmpty ? p.group! : 'Не выбрана',
-            isEmpty: p.group == null || p.group!.isEmpty,
-            isDark: isDark,
-          ),
-        ])),
-      ],
-    );
-  }
-
-  // ═══════════════════════════════════════════════════════════════════════════
-  // Строка‑row
-  // ═══════════════════════════════════════════════════════════════════════════
-
-  Widget _editableRow({
-    required IconData icon,
-    required String label,
-    required String value,
-    required bool isDark,
-    bool isEmpty = false,
-    Widget? trailing,
-    required VoidCallback onTap,
-  }) {
-    return InkWell(
-      onTap: onTap,
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 13),
-        child: Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Container(
-              width: 34, height: 34,
-              decoration: BoxDecoration(
-                color: AppColors.primary.withValues(alpha: 0.1),
-                borderRadius: BorderRadius.circular(9)),
-              child: Icon(icon, color: AppColors.primary, size: 18),
-            ),
-            const SizedBox(width: 12),
-            Expanded(child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(label, style: TextStyle(fontSize: 12,
-                    color: isDark ? Colors.white38 : Colors.black45)),
-                const SizedBox(height: 2),
-                Text(value,
-                    maxLines: 2, overflow: TextOverflow.ellipsis,
-                    style: TextStyle(fontSize: 15,
-                        color: isEmpty
-                            ? (isDark ? Colors.white30 : Colors.black26)
-                            : (isDark ? Colors.white : Colors.black87))),
-              ],
-            )),
-            if (trailing != null) ...[
-              const SizedBox(width: 8),
-              trailing,
-            ] else
-              Icon(Icons.chevron_right, size: 18,
-                  color: isDark ? Colors.white24 : Colors.black26),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _readOnlyRow({
-    required IconData icon,
-    required String label,
-    required String value,
-    required bool isDark,
-    bool isEmpty = false,
-    Widget? trailing,
-  }) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 13),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Container(
-            width: 34, height: 34,
-            decoration: BoxDecoration(
-              color: AppColors.primary.withValues(alpha: 0.1),
-              borderRadius: BorderRadius.circular(9)),
-            child: Icon(icon, color: AppColors.primary, size: 18),
-          ),
-          const SizedBox(width: 12),
-          Expanded(child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(label, style: TextStyle(fontSize: 12,
-                  color: isDark ? Colors.white38 : Colors.black45)),
-              const SizedBox(height: 2),
-              Text(value,
-                  maxLines: 2, overflow: TextOverflow.ellipsis,
-                  style: TextStyle(fontSize: 15,
-                      color: isEmpty
-                          ? (isDark ? Colors.white30 : Colors.black26)
-                          : (isDark ? Colors.white : Colors.black87))),
-            ],
-          )),
-          if (trailing != null) ...[
-            const SizedBox(width: 8),
-            trailing,
-          ] else
-            Icon(Icons.lock_outline, size: 14,
-                color: isDark ? Colors.white24 : Colors.black26),
-        ],
-      ),
-    );
-  }
-
-  Widget _infoRow({
-    required IconData icon,
-    required String label,
-    required String value,
-    required bool isDark,
-    Widget? trailing,
-  }) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 13),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Container(
-            width: 34, height: 34,
-            decoration: BoxDecoration(
-              color: AppColors.primary.withValues(alpha: 0.1),
-              borderRadius: BorderRadius.circular(9)),
-            child: Icon(icon, color: AppColors.primary, size: 18),
-          ),
-          const SizedBox(width: 12),
-          Expanded(child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(label, style: TextStyle(fontSize: 12,
-                  color: isDark ? Colors.white38 : Colors.black45)),
-              const SizedBox(height: 2),
-              Text(value, style: TextStyle(fontSize: 15,
-                  color: isDark ? Colors.white : Colors.black87)),
-            ],
-          )),
-          if (trailing != null) ...[
-            const SizedBox(width: 8),
-            trailing,
-          ],
-        ],
-      ),
-    );
-  }
-
-  Widget _actionRow({
-    required IconData icon, required String label, required Color color,
-    required bool isDark, required VoidCallback onTap,
-  }) {
-    return InkWell(
-      onTap: onTap,
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-        child: Row(children: [
-          Container(
-            width: 34, height: 34,
-            decoration: BoxDecoration(
-              color: color.withValues(alpha: 0.1),
-              borderRadius: BorderRadius.circular(9)),
-            child: Icon(icon, color: color, size: 18),
-          ),
-          const SizedBox(width: 12),
-          Expanded(child: Text(label, style: TextStyle(fontSize: 15,
-              color: color == Colors.red ? Colors.red
-                  : isDark ? Colors.white : Colors.black87))),
-        ]),
-      ),
-    );
-  }
-
-  // ═══════════════════════════════════════════════════════════════════════════
-  // Утилиты
-  // ═══════════════════════════════════════════════════════════════════════════
-
-  Widget _card({required bool isDark, EdgeInsets? padding, required Widget child}) {
-    return Container(
-      margin: const EdgeInsets.symmetric(horizontal: 12),
-      padding: padding,
-      decoration: BoxDecoration(
-        color: isDark ? const Color(0xFF1E1E1E) : Colors.white,
-        borderRadius: BorderRadius.circular(14),
-        boxShadow: [BoxShadow(
-          color: Colors.black.withValues(alpha: isDark ? 0.3 : 0.05),
-          blurRadius: 6, offset: const Offset(0, 2))],
-      ),
-      clipBehavior: Clip.antiAlias,
-      child: child,
-    );
-  }
-
-  Widget _cardTitle(IconData icon, String label, bool isDark) {
-    return Row(children: [
-      Container(
-        width: 32, height: 32,
-        decoration: BoxDecoration(
-          color: AppColors.primary.withValues(alpha: 0.1),
-          borderRadius: BorderRadius.circular(8)),
-        child: Icon(icon, color: AppColors.primary, size: 18),
-      ),
-      const SizedBox(width: 10),
-      Text(label, style: TextStyle(fontSize: 15, fontWeight: FontWeight.w600,
-          color: isDark ? Colors.white : Colors.black87)),
-    ]);
-  }
-
-  Widget _divider(bool isDark) => Padding(
-    padding: const EdgeInsets.only(left: 62),
-    child: Divider(height: 1,
-        color: isDark ? Colors.white10 : Colors.black.withValues(alpha: 0.06)),
-  );
-}
-
-
-// ═══════════════════════════════════════════════════════════════════════════════
 // Диалог создания группы / сообщества
 // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -1895,54 +1278,13 @@ class _CreateChatDialogState extends State<_CreateChatDialog> {
               ),
             ),
             const SizedBox(height: 16),
-            const Text(
-              'Добавить участников',
-              style: TextStyle(fontWeight: FontWeight.w600, fontSize: 13),
+            MemberPickerSection(
+              contacts: widget.contacts,
+              selected: _selectedContacts,
+              onToggle: (login, sel) => setState(() {
+                sel ? _selectedContacts.add(login) : _selectedContacts.remove(login);
+              }),
             ),
-            const SizedBox(height: 8),
-            ConstrainedBox(
-              constraints: const BoxConstraints(maxHeight: 220),
-              child: ListView(
-                shrinkWrap: true,
-                children: widget.contacts.map((contact) {
-                  final selected = _selectedContacts.contains(contact.name);
-                  return CheckboxListTile(
-                    value: selected,
-                    title: Text(contact.name),
-                    subtitle: contact.group != null
-                        ? Text(contact.group!,
-                            style: const TextStyle(
-                                fontSize: 12, color: AppColors.subtle))
-                        : null,
-                    secondary: const CircleAvatar(
-                      backgroundColor: AppColors.primary,
-                      child: Icon(Icons.person,
-                          color: AppColors.textLight, size: 18),
-                    ),
-                    activeColor: AppColors.primary,
-                    dense: true,
-                    contentPadding: EdgeInsets.zero,
-                    onChanged: (val) => setState(() {
-                      val == true
-                          ? _selectedContacts.add(contact.name)
-                          : _selectedContacts.remove(contact.name);
-                    }),
-                  );
-                }).toList(),
-              ),
-            ),
-            if (_selectedContacts.isNotEmpty)
-              Padding(
-                padding: const EdgeInsets.only(top: 8),
-                child: Text(
-                  'Выбрано: ${_selectedContacts.length}',
-                  style: const TextStyle(
-                    fontSize: 12,
-                    color: AppColors.primary,
-                    fontWeight: FontWeight.w600,
-                  ),
-                ),
-              ),
           ],
         ),
       ),
@@ -1953,7 +1295,7 @@ class _CreateChatDialogState extends State<_CreateChatDialog> {
         ),
         FilledButton(
           onPressed: _submit,
-          style: FilledButton.styleFrom(backgroundColor: AppColors.primary),
+          style: FilledButton.styleFrom(backgroundColor: Theme.of(context).colorScheme.primary),
           child: const Text('Создать'),
         ),
       ],
@@ -2070,14 +1412,14 @@ class _ContactPickerScreenState extends State<_ContactPickerScreen> {
   Widget _openBadge() => Container(
         padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
         decoration: BoxDecoration(
-          color: AppColors.primary.withValues(alpha: 0.12),
+          color: Theme.of(context).colorScheme.primary.withValues(alpha: 0.12),
           borderRadius: BorderRadius.circular(8),
         ),
-        child: const Text(
+        child: Text(
           'Открыть',
           style: TextStyle(
             fontSize: 11,
-            color: AppColors.primary,
+            color: Theme.of(context).colorScheme.primary,
             fontWeight: FontWeight.w600,
           ),
         ),
@@ -2149,11 +1491,11 @@ class _ContactPickerScreenState extends State<_ContactPickerScreen> {
       body: Builder(builder: (context) {
         if (_isMobile) {
           if (_loadingDevice) {
-            return const Center(
+            return Center(
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  CircularProgressIndicator(color: AppColors.primary),
+                  CircularProgressIndicator(color: Theme.of(context).colorScheme.primary),
                   SizedBox(height: 16),
                   Text('Загружаем контакты…',
                       style: TextStyle(color: AppColors.subtle)),
@@ -2189,7 +1531,7 @@ class _ContactPickerScreenState extends State<_ContactPickerScreen> {
                       icon: const Icon(Icons.refresh),
                       label: const Text('Повторить'),
                       style: FilledButton.styleFrom(
-                          backgroundColor: AppColors.primary),
+                          backgroundColor: Theme.of(context).colorScheme.primary),
                     ),
                   ],
                 ),
@@ -2262,14 +1604,14 @@ class _ContactPickerScreenState extends State<_ContactPickerScreen> {
               ? CircleAvatar(backgroundImage: MemoryImage(dc.photo!))
               : CircleAvatar(
                   backgroundColor: inApp
-                      ? AppColors.primary.withValues(alpha: 0.2)
-                      : AppColors.primary.withValues(alpha: 0.10),
+                      ? Theme.of(context).colorScheme.primary.withValues(alpha: 0.2)
+                      : Theme.of(context).colorScheme.primary.withValues(alpha: 0.10),
                   child: Text(
                     displayName.isNotEmpty
                         ? displayName[0].toUpperCase()
                         : '?',
-                    style: const TextStyle(
-                        color: AppColors.primary, fontWeight: FontWeight.bold),
+                    style: TextStyle(
+                        color: Theme.of(context).colorScheme.primary, fontWeight: FontWeight.bold),
                   ),
                 ),
           title: Text(displayName),
@@ -2289,18 +1631,19 @@ class _ContactPickerScreenState extends State<_ContactPickerScreen> {
 
   Widget _appContactTile(AppContact contact) {
     final hasChat = _hasChat(contact.name);
+    final displayName = contact.bestName;
     return Column(
       children: [
         ListTile(
           leading: CircleAvatar(
-            backgroundColor: AppColors.primary,
+            backgroundColor: Theme.of(context).colorScheme.primary,
             child: Text(
-              contact.name.isNotEmpty ? contact.name[0].toUpperCase() : '?',
+              displayName.isNotEmpty ? displayName[0].toUpperCase() : '?',
               style: const TextStyle(
                   color: Colors.white, fontWeight: FontWeight.bold),
             ),
           ),
-          title: Text(contact.name),
+          title: Text(displayName),
           subtitle: contact.group != null
               ? Text(contact.group!,
                   style:
@@ -2340,6 +1683,49 @@ class _SectionHeader extends StatelessWidget {
           ),
         ],
       ),
+    );
+  }
+}
+
+// ── Логотип Caspian Messenger ─────────────────────────────────────────────────
+
+/// Компактная брендовая плашка: иконка + "Caspian Messenger".
+/// Используется в шапке вкладок чатов.
+class _CaspianLogo extends StatelessWidget {
+  const _CaspianLogo();
+
+  @override
+  Widget build(BuildContext context) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        // ── Иконка: градиентный круг с волной ───────────────────────
+        Container(
+          width: 28,
+          height: 28,
+          decoration: const BoxDecoration(
+            shape: BoxShape.circle,
+            gradient: LinearGradient(
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+              colors: [Color(0xFF0088CC), Color(0xFF00C8C8)],
+            ),
+          ),
+          child: const Icon(Icons.waves_rounded, color: Colors.white, size: 16),
+        ),
+        const SizedBox(width: 8),
+        // ── Надпись ──────────────────────────────────────────────────
+        Text(
+          'Caspian Messenger',
+          style: TextStyle(
+            fontSize: 14,
+            fontWeight: FontWeight.w700,
+            letterSpacing: 0.1,
+            color: isDark ? Colors.white70 : Colors.black54,
+          ),
+        ),
+      ],
     );
   }
 }

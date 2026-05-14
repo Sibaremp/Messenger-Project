@@ -175,8 +175,8 @@ class _SearchScreenState extends State<SearchScreen>
         ),
         bottom: TabBar(
           controller: _tabController,
-          indicatorColor: AppColors.primary,
-          labelColor: AppColors.primary,
+          indicatorColor: Theme.of(context).colorScheme.primary,
+          labelColor: Theme.of(context).colorScheme.primary,
           unselectedLabelColor: AppColors.subtle,
           labelStyle:
               const TextStyle(fontWeight: FontWeight.w600, fontSize: 13),
@@ -188,8 +188,8 @@ class _SearchScreenState extends State<SearchScreen>
         ),
       ),
       body: _loading
-          ? const Center(
-              child: CircularProgressIndicator(color: AppColors.primary))
+          ? Center(
+              child: CircularProgressIndicator(color: Theme.of(context).colorScheme.primary))
           : _query.isEmpty
               ? _buildEmptyHint()
               : TabBarView(
@@ -256,13 +256,13 @@ class _SearchScreenState extends State<SearchScreen>
                       padding: const EdgeInsets.symmetric(
                           horizontal: 6, vertical: 2),
                       decoration: BoxDecoration(
-                        color: AppColors.primary.withValues(alpha: 0.12),
+                        color: Theme.of(context).colorScheme.primary.withValues(alpha: 0.12),
                         borderRadius: BorderRadius.circular(6),
                       ),
-                      child: const Text('Академ.',
+                      child: Text('Академ.',
                           style: TextStyle(
                               fontSize: 10,
-                              color: AppColors.primary,
+                              color: Theme.of(context).colorScheme.primary,
                               fontWeight: FontWeight.w600)),
                     )
                   : null,
@@ -318,9 +318,9 @@ class _SearchScreenState extends State<SearchScreen>
                 children: [
                   if (r.message.senderName != null)
                     Text(r.message.senderName!,
-                        style: const TextStyle(
+                        style: TextStyle(
                             fontSize: 11,
-                            color: AppColors.primary,
+                            color: Theme.of(context).colorScheme.primary,
                             fontWeight: FontWeight.w500)),
                   _highlightText(r.message.text, _query,
                       maxLines: 2, fontSize: 13),
@@ -386,9 +386,9 @@ class _SearchScreenState extends State<SearchScreen>
                         ListTile(
                           leading: CircleAvatar(
                             backgroundColor:
-                                AppColors.primary.withValues(alpha: 0.12),
+                                Theme.of(context).colorScheme.primary.withValues(alpha: 0.12),
                             child: Icon(_fileIcon(r.attachment.type),
-                                color: AppColors.primary, size: 20),
+                                color: Theme.of(context).colorScheme.primary, size: 20),
                           ),
                           title: _highlightText(
                               r.attachment.fileName, _query,
@@ -417,11 +417,11 @@ class _SearchScreenState extends State<SearchScreen>
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
         decoration: BoxDecoration(
-          color: selected ? AppColors.primary : Colors.transparent,
+          color: selected ? Theme.of(context).colorScheme.primary : Colors.transparent,
           borderRadius: BorderRadius.circular(14),
           border: Border.all(
             color: selected
-                ? AppColors.primary
+                ? Theme.of(context).colorScheme.primary
                 : AppColors.subtle.withValues(alpha: 0.3),
           ),
         ),
@@ -485,9 +485,9 @@ class _SearchScreenState extends State<SearchScreen>
       spans.add(TextSpan(
         text: text.substring(idx, idx + query.length),
         style: TextStyle(
-          backgroundColor: AppColors.primary.withValues(alpha: 0.25),
+          backgroundColor: Theme.of(context).colorScheme.primary.withValues(alpha: 0.25),
           fontWeight: FontWeight.w600,
-          color: AppColors.primary,
+          color: Theme.of(context).colorScheme.primary,
         ),
       ));
       start = idx + query.length;

@@ -15,4 +15,7 @@ public class Person
     // Nullable link to a messenger User account
     public Guid? UserId { get; set; }
     public User? User { get; set; }
+
+    /// <summary>When this participant record was added to the system.</summary>
+    public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
 }

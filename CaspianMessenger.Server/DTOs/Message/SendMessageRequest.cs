@@ -9,6 +9,8 @@ public class SendMessageRequest
     public List<AttachmentRequest>? Attachments { get; set; }
     public ReplyRequest? ReplyTo { get; set; }
     public List<MentionRequest>? Mentions { get; set; }
+    /// true — сообщение отправляется от имени сообщества (не показывать автора).
+    public bool PostAsCommunity { get; set; }
 }
 
 public class MentionRequest

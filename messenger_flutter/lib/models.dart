@@ -1,4 +1,6 @@
 // ─── Models ───────────────────────────────────────────────────────────────────
+// ignore_for_file: depend_on_referenced_packages
+import 'dart:convert';
 
 /// Различает личные, групповые и широковещательные (сообщества) чаты.
 enum ChatType { direct, group, community }
@@ -75,27 +77,54 @@ class Attachment {
 
 /// Контакт, отображаемый в выборщике контактов (реестр приложения, не книга устройства).
 class AppContact {
+  /// Логин (идентификатор) пользователя — используется для поиска чата.
   final String name;
+  /// ФИО пользователя — используется для отображения. Может быть null если не заполнено.
+  final String? displayName;
   final String? group;
   final String? phone;
   /// true — преподаватель (отображается в «Академический»), false — студент (в «Общение»).
   final bool isTeacher;
 
-  const AppContact({required this.name, this.group, this.phone, this.isTeacher = false});
+  const AppContact({
+    required this.name,
+    this.displayName,
+    this.group,
+    this.phone,
+    this.isTeacher = false,
+  });
+
+  /// Лучшее имя для отображения: ФИО если есть, иначе логин.
+  String get bestName =>
+      (displayName?.isNotEmpty == true) ? displayName! : name;
 
   Map<String, dynamic> toJson() => {
     'name': name,
+    if (displayName != null) 'displayName': displayName,
     if (group != null) 'group': group,
     if (phone != null) 'phone': phone,
     'isTeacher': isTeacher,
   };
 
-  factory AppContact.fromJson(Map<String, dynamic> j) => AppContact(
-    name: j['name'] as String,
-    group: j['group'] as String?,
-    phone: j['phone'] as String?,
-    isTeacher: j['isTeacher'] as bool? ?? false,
-  );
+  factory AppContact.fromJson(Map<String, dynamic> j) {
+    // Пробуем fullName, displayName, затем собираем из частей ФИО.
+    String? dn = j['fullName'] as String? ?? j['displayName'] as String?;
+    if (dn == null || dn.trim().isEmpty) {
+      final parts = <String>[
+        if (j['lastName']  is String && (j['lastName']  as String).isNotEmpty) j['lastName']  as String,
+        if (j['firstName'] is String && (j['firstName'] as String).isNotEmpty) j['firstName'] as String,
+        if (j['middleName'] is String && (j['middleName'] as String).isNotEmpty) j['middleName'] as String,
+      ];
+      dn = parts.isEmpty ? null : parts.join(' ');
+    }
+    return AppContact(
+      name: j['name'] as String,
+      displayName: dn,
+      group: j['group'] as String?,
+      phone: j['phone'] as String?,
+      isTeacher: j['isTeacher'] as bool? ?? false,
+    );
+  }
 }
 
 /// Упоминание пользователя в тексте сообщения (@mention).
@@ -257,6 +286,58 @@ class Poll {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Отдельное сообщение чата с необязательным вложением и статусом доставки.
+/// Приглашение в группу, встроенное в [Message.text] как магически-префиксный JSON.
+/// Сервер хранит и пересылает это как обычный текст — клиент разбирает при рендере.
+class GroupInvite {
+  static const _prefix = 'INVITE';
+
+  final String chatId;
+  final String chatName;
+  final ChatType chatType;
+  final String? avatarPath;
+  final int memberCount;
+
+  const GroupInvite({
+    required this.chatId,
+    required this.chatName,
+    required this.chatType,
+    this.avatarPath,
+    this.memberCount = 0,
+  });
+
+  /// Оборачивает данные в строку для [Message.text].
+  String toMessageText() => '$_prefix${jsonEncode(toJson())}';
+
+  /// Читает приглашение из текста сообщения. null если текст не является приглашением.
+  static GroupInvite? fromMessageText(String text) {
+    if (!text.startsWith(_prefix)) return null;
+    try {
+      final j = jsonDecode(text.substring(_prefix.length)) as Map<String, dynamic>;
+      return GroupInvite.fromJson(j);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  Map<String, dynamic> toJson() => {
+    'chatId': chatId,
+    'chatName': chatName,
+    'chatType': chatType.name,
+    if (avatarPath != null) 'avatarPath': avatarPath,
+    'memberCount': memberCount,
+  };
+
+  factory GroupInvite.fromJson(Map<String, dynamic> j) => GroupInvite(
+    chatId: j['chatId'] as String,
+    chatName: j['chatName'] as String,
+    chatType: ChatType.values.byName(j['chatType'] as String? ?? 'group'),
+    avatarPath: j['avatarPath'] as String?,
+    memberCount: (j['memberCount'] as num?)?.toInt() ?? 0,
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+
 class Message {
   // Автоинкрементный резервный идентификатор, используемый когда явный id не задан.
   static int _nextId = 0;
@@ -266,10 +347,14 @@ class Message {
   final bool isMe;
   final DateTime time;
   final String? senderName;
+  /// ФИО в формате «Фамилия И.О.» (если сервер вернул из таблицы Person).
+  final String? senderDisplayName;
   /// Учебная группа отправителя (для студентов).
   final String? senderGroup;
   /// Путь/URL к аватару отправителя (чтобы показать его рядом с пузырём).
   final String? senderAvatarPath;
+  /// true — сообщение опубликовано от имени сообщества (не показывать автора).
+  final bool postAsCommunity;
   final Attachment? attachment;
   /// Медиаальбом — несколько фото/видео в одном сообщении (Telegram-style).
   /// Если задано — [attachment] игнорируется при рендеринге.
@@ -284,14 +369,104 @@ class Message {
   /// Опрос, прикреплённый к этому сообщению (null если не опрос).
   final Poll? poll;
 
+  /// Если это сообщение является приглашением в группу — парсит данные из [text].
+  GroupInvite? get groupInvite => GroupInvite.fromMessageText(text);
+
+  // ── GIF (Tenor) ────────────────────────────────────────────────────────────
+  static const _gifPrefix = 'GIF:';
+
+  /// true если сообщение содержит GIF-ссылку от Tenor.
+  /// Пустой список attachments ([]) тоже считается «нет вложений» — сервер
+  /// может вернуть [] вместо null для сообщений без файлов.
+  bool get isGif =>
+      text.startsWith(_gifPrefix) &&
+      poll == null &&
+      attachment == null &&
+      (attachments == null || attachments!.isEmpty) &&
+      groupInvite == null;
+
+  /// URL GIF-анимации (null если [isGif] == false).
+  String? get gifUrl => isGif ? text.substring(_gifPrefix.length) : null;
+
+  /// Упаковывает GIF-URL в текст сообщения.
+  static String gifText(String url) => '$_gifPrefix$url';
+
+  // ── Emoji-only / стикер ────────────────────────────────────────────────────
+  /// true если сообщение состоит исключительно из эмодзи (1–3 символа).
+  /// Такие сообщения рендерятся крупно, без пузыря — как стикеры.
+  bool get isEmojiOnly {
+    if (text.isEmpty) return false;
+    if (isGif || isMe && false) {} // suppress unused warning
+    if (poll != null || attachment != null ||
+        (attachments != null && attachments!.isNotEmpty) ||
+        groupInvite != null || isGif) return false;
+    final t = text.trim();
+    if (t.isEmpty || t.length > 16) return false;
+    // Подсчёт grapheme-clusters через runes-приближение:
+    // если все codepoints — emoji (>= U+00A9 или surrogates) и не более 3 символов
+    final clusters = _countEmojiClusters(t);
+    return clusters > 0 && clusters <= 3;
+  }
+
+  static int _countEmojiClusters(String s) {
+    // Простая эвристика: считаем «кластеры» через обход rune-последовательностей.
+    // Эмодзи = codepoint >= 0x00A9 или ZWJ-последовательности.
+    // Возвращает -1 если встречается обычный символ.
+    int count = 0;
+    int i = 0;
+    final runes = s.runes.toList();
+    while (i < runes.length) {
+      final cp = runes[i];
+      // ZWJ (U+200D) — часть составного эмодзи, не считаем отдельно
+      if (cp == 0x200D) { i++; continue; }
+      // Variation selector (U+FE0F, U+FE0E) — модификатор, не считаем
+      if (cp == 0xFE0F || cp == 0xFE0E) { i++; continue; }
+      // Skin tone modifiers (U+1F3FB..U+1F3FF)
+      if (cp >= 0x1F3FB && cp <= 0x1F3FF) { i++; continue; }
+      // Regional indicator symbols (флаги) U+1F1E0..U+1F1FF — считаем пару за 1
+      if (cp >= 0x1F1E0 && cp <= 0x1F1FF) {
+        if (i + 1 < runes.length &&
+            runes[i + 1] >= 0x1F1E0 && runes[i + 1] <= 0x1F1FF) {
+          i += 2;
+        } else {
+          i++;
+        }
+        count++;
+        continue;
+      }
+      // Keycap: digit + U+FE0F + U+20E3
+      if (cp >= 0x30 && cp <= 0x39) {
+        if (i + 2 < runes.length &&
+            runes[i + 1] == 0xFE0F && runes[i + 2] == 0x20E3) {
+          i += 3; count++; continue;
+        }
+        return -1; // обычная цифра
+      }
+      // Стандартные emoji-диапазоны
+      if (cp == 0x00A9 || cp == 0x00AE ||
+          (cp >= 0x203C && cp <= 0x3299) ||
+          (cp >= 0x1F000 && cp <= 0x1FAFF) ||
+          cp == 0x20E3) {
+        count++;
+        i++;
+        continue;
+      }
+      // Встретили обычный символ → не emoji-only
+      return -1;
+    }
+    return count;
+  }
+
   Message({
     String? id,
     required this.text,
     required this.isMe,
     required this.time,
     this.senderName,
+    this.senderDisplayName,
     this.senderGroup,
     this.senderAvatarPath,
+    this.postAsCommunity = false,
     this.attachment,
     this.attachments,
     this.isEdited = false,
@@ -318,8 +493,10 @@ class Message {
     isMe: isMe,
     time: time,
     senderName: senderName,
+    senderDisplayName: senderDisplayName,
     senderGroup: senderGroup,
     senderAvatarPath: senderAvatarPath,
+    postAsCommunity: postAsCommunity,
     attachment: attachment,
     attachments: attachments,
     isEdited: isEdited ?? this.isEdited,
@@ -336,8 +513,10 @@ class Message {
     'isMe': isMe,
     'time': time.toIso8601String(),
     if (senderName != null) 'senderName': senderName,
+    if (senderDisplayName != null) 'senderDisplayName': senderDisplayName,
     if (senderGroup != null) 'senderGroup': senderGroup,
     if (senderAvatarPath != null) 'senderAvatarPath': senderAvatarPath,
+    if (postAsCommunity) 'postAsCommunity': postAsCommunity,
     if (attachment != null) 'attachment': attachment!.toJson(),
     if (attachments != null && attachments!.isNotEmpty)
       'attachments': attachments!.map((a) => a.toJson()).toList(),
@@ -355,8 +534,10 @@ class Message {
     isMe: (j['senderId'] as String?) == currentUserId || (j['isMe'] as bool? ?? false),
     time: DateTime.parse(j['time'] as String),
     senderName: j['senderName'] as String?,
+    senderDisplayName: j['senderDisplayName'] as String?,
     senderGroup: j['senderGroup'] as String?,
     senderAvatarPath: j['senderAvatarPath'] as String?,
+    postAsCommunity: j['postAsCommunity'] as bool? ?? false,
     attachment: j['attachment'] != null
         ? Attachment.fromJson(j['attachment'] as Map<String, dynamic>)
         : null,
@@ -387,6 +568,8 @@ class Comment {
   final String id;
   final String text;
   final String senderName;
+  /// ФИО в формате «Фамилия И.О.» (если сервер вернул из таблицы Person).
+  final String? senderDisplayName;
   /// Учебная группа отправителя (для студентов).
   final String? senderGroup;
   final DateTime time;
@@ -399,6 +582,7 @@ class Comment {
     String? id,
     required this.text,
     required this.senderName,
+    this.senderDisplayName,
     this.senderGroup,
     required this.time,
     this.isMe = false,
@@ -419,6 +603,7 @@ class Comment {
       id: id,
       text: text ?? this.text,
       senderName: senderName,
+      senderDisplayName: senderDisplayName,
       senderGroup: senderGroup,
       time: time,
       isMe: isMe,
@@ -432,6 +617,7 @@ class Comment {
     'id': id,
     'text': text,
     'senderName': senderName,
+    if (senderDisplayName != null) 'senderDisplayName': senderDisplayName,
     if (senderGroup != null) 'senderGroup': senderGroup,
     'time': time.toIso8601String(),
     'isMe': isMe,
@@ -444,6 +630,7 @@ class Comment {
     id: j['id'] as String,
     text: j['text'] as String? ?? '',
     senderName: j['senderName'] as String? ?? '',
+    senderDisplayName: j['senderDisplayName'] as String?,
     senderGroup: j['senderGroup'] as String?,
     time: DateTime.parse(j['time'] as String),
     isMe: (j['senderId'] as String?) == currentUserId || (j['isMe'] as bool? ?? false),
@@ -491,43 +678,65 @@ class ChatMember {
   /// Используется в метаданных @упоминаний, отправляемых на сервер.
   /// Может отсутствовать для виртуальных/локальных участников.
   final String? userId;
+  /// Логин пользователя.
   final String name;
+  /// ФИО из таблицы Person; null если не связан с Person.
+  final String? displayName;
   /// Учебная группа участника (для студентов).
   final String? group;
   final MemberRole role;
+  /// Путь к аватарке участника (серверный или локальный).
+  final String? avatarPath;
+  /// Признак онлайн-присутствия (присылается сервером).
+  final bool isOnline;
 
   const ChatMember({
     this.userId,
     required this.name,
+    this.displayName,
     this.group,
     this.role = MemberRole.member,
+    this.avatarPath,
+    this.isOnline = false,
   });
 
   ChatMember copyWith({
     String? userId,
     String? name,
+    String? displayName,
     String? group,
     MemberRole? role,
+    String? avatarPath,
+    bool? isOnline,
   }) => ChatMember(
     userId: userId ?? this.userId,
     name: name ?? this.name,
+    displayName: displayName ?? this.displayName,
     group: group ?? this.group,
     role: role ?? this.role,
+    avatarPath: avatarPath ?? this.avatarPath,
+    isOnline: isOnline ?? this.isOnline,
   );
 
   Map<String, dynamic> toJson() => {
     if (userId != null) 'userId': userId,
     'name': name,
+    if (displayName != null) 'displayName': displayName,
     if (group != null) 'group': group,
     'role': role.name,
+    if (avatarPath != null) 'avatarPath': avatarPath,
+    'isOnline': isOnline,
   };
 
   factory ChatMember.fromJson(Map<String, dynamic> j) => ChatMember(
     // Сервер может присылать userId или id — пробуем оба ключа.
     userId: j['userId'] as String? ?? j['id'] as String?,
     name: j['name'] as String,
+    displayName: j['displayName'] as String?,
     group: j['group'] as String?,
     role: MemberRole.values.byName(j['role'] as String? ?? 'member'),
+    avatarPath: j['avatarPath'] as String?,
+    isOnline: j['isOnline'] as bool? ?? false,
   );
 }
 
@@ -570,6 +779,11 @@ class Chat {
   String get lastMessage {
     if (messages.isEmpty) return '';
     final msg = messages.last;
+    // Карточка-приглашение: показываем читаемый текст вместо сырого INVITE{...}
+    final invite = msg.groupInvite;
+    if (invite != null) {
+      return '📨 Приглашение в «${invite.chatName}»';
+    }
     String content = msg.text;
     if (content.isEmpty) {
       if (msg.poll != null) {
@@ -583,10 +797,12 @@ class Chat {
         };
       }
     }
-    if (type != ChatType.direct && msg.senderName != null && !msg.isMe) {
+    if (type != ChatType.direct && type != ChatType.community &&
+        msg.senderName != null && !msg.isMe && !msg.postAsCommunity) {
+      final displayName = msg.senderDisplayName ?? msg.senderName!;
       final prefix = msg.senderGroup != null
-          ? '${msg.senderGroup} ${msg.senderName}'
-          : msg.senderName!;
+          ? '${msg.senderGroup} $displayName'
+          : displayName;
       return '$prefix: $content';
     }
     return content;

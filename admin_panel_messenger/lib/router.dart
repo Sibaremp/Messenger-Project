@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'features/auth/presentation/providers/auth_provider.dart';
 import 'features/auth/presentation/screens/login_screen.dart';
+import 'features/dashboard/presentation/screens/dashboard_screen.dart';
 import 'features/import/presentation/screens/import_screen.dart';
 import 'features/people/presentation/screens/people_screen.dart';
 import 'features/users/presentation/screens/users_screen.dart';
@@ -29,7 +30,7 @@ final routerProvider = Provider<GoRouter>((ref) {
         return loc == '/login' ? null : '/login';
       }
       if (auth.status == AuthStatus.authenticated) {
-        if (loc == '/' || loc == '/login') return '/people';
+        if (loc == '/' || loc == '/login') return '/dashboard';
       }
       return null;
     },
@@ -47,6 +48,13 @@ final routerProvider = Provider<GoRouter>((ref) {
       ShellRoute(
         builder: (context, state, child) => MainLayout(child: child),
         routes: [
+          GoRoute(
+            path: '/dashboard',
+            pageBuilder: (context, state) => NoTransitionPage(
+              child: const DashboardScreen(),
+              key: state.pageKey,
+            ),
+          ),
           GoRoute(
             path: '/people',
             pageBuilder: (context, state) => NoTransitionPage(

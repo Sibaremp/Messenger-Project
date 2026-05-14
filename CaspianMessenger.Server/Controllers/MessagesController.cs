@@ -9,20 +9,31 @@ namespace CaspianMessenger.Server.Controllers;
 [ApiController]
 [Route("api/chats/{chatId:guid}")]
 [Authorize]
-public class MessagesController(MessageService messageService, ChatService chatService, NotificationService notificationService) : ControllerBase
+public class MessagesController(
+    MessageService messageService,
+    ChatService chatService,
+    NotificationService notificationService,
+    EncryptionService encryption) : ControllerBase
 {
     [HttpPost("messages")]
     public async Task<IActionResult> SendMessage(Guid chatId, [FromBody] SendMessageRequest req)
     {
         var userId = GetUserId();
+
+        // Decrypt incoming text (no-op if plaintext or key not established yet)
+        req.Text = encryption.Decrypt(userId, req.Text);
+
         var (chat, error) = await messageService.SendMessageAsync(chatId, userId, req);
         if (error != null) return BadRequest(new { message = error });
 
+        // Broadcast to all members — NotificationService encrypts per recipient
         var memberIds = await chatService.GetChatMemberIdsAsync(chatId);
-        var lastMsg = chat!.Messages.LastOrDefault();
+        var lastMsg   = chat!.Messages.LastOrDefault();
         if (lastMsg != null)
             await notificationService.NotifyMessageReceived(memberIds, chatId, lastMsg);
 
+        // Encrypt REST response for the requesting user
+        encryption.EncryptChatInPlace(chat!, userId);
         return Ok(chat);
     }
 
@@ -30,13 +41,20 @@ public class MessagesController(MessageService messageService, ChatService chatS
     public async Task<IActionResult> EditMessage(Guid chatId, Guid messageId, [FromBody] EditMessageRequest req)
     {
         var userId = GetUserId();
+
+        // Decrypt to get plaintext — needed both for storage and for notifications
+        var plainText = encryption.Decrypt(userId, req.Text);
+        req.Text = plainText;
+
         var (chat, error) = await messageService.EditMessageAsync(chatId, messageId, userId, req);
         if (error == "Can only edit own messages") return Forbid();
         if (error != null) return NotFound(new { message = error });
 
+        // NotifyMessageEdited receives plaintext; it encrypts per recipient internally
         var memberIds = await chatService.GetChatMemberIdsAsync(chatId);
-        await notificationService.NotifyMessageEdited(memberIds, chatId, messageId, req.Text);
+        await notificationService.NotifyMessageEdited(memberIds, chatId, messageId, plainText);
 
+        encryption.EncryptChatInPlace(chat!, userId);
         return Ok(chat);
     }
 
@@ -51,6 +69,7 @@ public class MessagesController(MessageService messageService, ChatService chatS
         var memberIds = await chatService.GetChatMemberIdsAsync(chatId);
         await notificationService.NotifyMessagesDeleted(memberIds, chatId, req.Ids);
 
+        encryption.EncryptChatInPlace(chat!, userId);
         return Ok(chat);
     }
 
@@ -60,6 +79,8 @@ public class MessagesController(MessageService messageService, ChatService chatS
         var userId = GetUserId();
         var (chat, error) = await messageService.ForwardMessagesAsync(chatId, userId, req.MessageIds);
         if (error != null) return BadRequest(new { message = error });
+
+        encryption.EncryptChatInPlace(chat!, userId);
         return Ok(chat);
     }
 
@@ -83,6 +104,7 @@ public class MessagesController(MessageService messageService, ChatService chatS
             });
         }
 
+        encryption.EncryptChatInPlace(chat!, userId);
         return Ok(chat);
     }
 
@@ -106,6 +128,7 @@ public class MessagesController(MessageService messageService, ChatService chatS
             });
         }
 
+        encryption.EncryptChatInPlace(chat!, userId);
         return Ok(chat);
     }
 

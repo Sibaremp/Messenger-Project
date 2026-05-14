@@ -109,6 +109,7 @@ builder.Services.AddScoped<ImportService>();
 builder.Services.AddSingleton<CallService>();
 builder.Services.AddSingleton<FcmService>();
 builder.Services.AddSingleton<ProfanityFilter>();
+builder.Services.AddSingleton<EncryptionService>();
 builder.Services.AddHostedService<PollAutoCloseService>();
 builder.Services.AddHostedService<SessionCleanupService>();
 builder.Services.AddHostedService<VideoThumbnailMigrationService>();

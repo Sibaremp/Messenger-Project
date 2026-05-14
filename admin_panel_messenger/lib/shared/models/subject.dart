@@ -16,6 +16,29 @@ class Subject {
       );
 }
 
+// Назначение в разрезе предмета (для экрана предметов)
+class SubjectAssignment {
+  final int id;
+  final int personId;
+  final String teacherName;
+  final String groupName;
+
+  const SubjectAssignment({
+    required this.id,
+    required this.personId,
+    required this.teacherName,
+    required this.groupName,
+  });
+
+  factory SubjectAssignment.fromJson(Map<String, dynamic> json) =>
+      SubjectAssignment(
+        id: json['id'] as int,
+        personId: json['personId'] as int? ?? 0,
+        teacherName: json['teacherName'] as String? ?? '',
+        groupName: json['groupName'] as String? ?? '',
+      );
+}
+
 class TeacherAssignment {
   final int id;
   final int subjectId;

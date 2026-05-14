@@ -1,12 +1,15 @@
 import 'dart:io';
+import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
+import 'package:file_picker/file_picker.dart';
 import 'theme.dart' show ThemeProvider, AppThemeMode;
 import 'app_constants.dart' show AppColors;
 import 'package:image_picker/image_picker.dart';
 import 'services/auth_service.dart' as svc;
 import 'services/api_config.dart' show ApiConfig;
 import 'services/sim_service.dart';
+import 'utils/app_snack.dart';
 
 // ─── Роль пользователя ────────────────────────────────────────────────────────
 
@@ -175,7 +178,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                     padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
                     decoration: BoxDecoration(
                       color: profile.role == ProfileRole.teacher
-                          ? AppColors.primary.withValues(alpha: 0.15)
+                          ? Theme.of(context).colorScheme.primary.withValues(alpha: 0.15)
                           : Colors.blue.withValues(alpha: 0.15),
                       borderRadius: BorderRadius.circular(8),
                     ),
@@ -185,7 +188,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                         fontSize: 12,
                         fontWeight: FontWeight.w600,
                         color: profile.role == ProfileRole.teacher
-                            ? AppColors.primary
+                            ? Theme.of(context).colorScheme.primary
                             : Colors.blue,
                       ),
                     ),
@@ -321,6 +324,16 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
     }
   }
 
+  Future<void> _pickGif() async {
+    final result = await FilePicker.platform.pickFiles(
+      type: FileType.custom,
+      allowedExtensions: ['gif'],
+    );
+    if (result != null && result.files.single.path != null && mounted) {
+      setState(() => _avatarPath = result.files.single.path);
+    }
+  }
+
   void _showPickerOptions() {
     showModalBottomSheet(
       context: context,
@@ -342,8 +355,8 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
             ),
             const SizedBox(height: 8),
             ListTile(
-              leading: const CircleAvatar(
-                backgroundColor: AppColors.primary,
+              leading: CircleAvatar(
+                backgroundColor: Theme.of(context).colorScheme.primary,
                 child: Icon(Icons.camera_alt, color: Colors.white, size: 20),
               ),
               title: const Text('Сделать фото'),
@@ -353,14 +366,25 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
               },
             ),
             ListTile(
-              leading: const CircleAvatar(
-                backgroundColor: AppColors.primary,
+              leading: CircleAvatar(
+                backgroundColor: Theme.of(context).colorScheme.primary,
                 child: Icon(Icons.photo_library, color: Colors.white, size: 20),
               ),
               title: const Text('Выбрать из галереи'),
               onTap: () {
                 Navigator.pop(context);
                 _pickImage(ImageSource.gallery);
+              },
+            ),
+            ListTile(
+              leading: CircleAvatar(
+                backgroundColor: Theme.of(context).colorScheme.primary,
+                child: Icon(Icons.gif, color: Colors.white, size: 20),
+              ),
+              title: const Text('Выбрать GIF'),
+              onTap: () {
+                Navigator.pop(context);
+                _pickGif();
               },
             ),
             if (_avatarPath != null)
@@ -440,7 +464,7 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
                 style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
             const SizedBox(height: 8),
             ...sims.map((sim) => ListTile(
-              leading: const Icon(Icons.sim_card_outlined, color: AppColors.primary),
+              leading: Icon(Icons.sim_card_outlined, color: Theme.of(context).colorScheme.primary),
               title: Text(sim.slotLabel),
               subtitle: Text(sim.displayInfo),
               trailing: sim.phoneNumber != null
@@ -458,22 +482,13 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
 
   void _snack(String text, {SnackBarAction? action}) {
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-      content: Text(text),
-      behavior: SnackBarBehavior.floating,
-      action: action,
-    ));
+    AppSnack.info(context, text);
   }
 
   Future<void> _save() async {
     final name = _nameController.text.trim();
     if (name.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Имя не может быть пустым'),
-          behavior: SnackBarBehavior.floating,
-        ),
-      );
+            AppSnack.info(context, 'Имя не может быть пустым');
       return;
     }
 
@@ -496,9 +511,7 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
     } catch (e) {
       if (!mounted) return;
       setState(() => _isSaving = false);
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Не удалось загрузить аватар: $e')),
-      );
+            AppSnack.error(context, 'Не удалось загрузить аватар: $e');
       return;
     }
 
@@ -516,8 +529,9 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
     );
 
     if (widget.auth != null) {
+      // name (ФИО) намеренно не передаётся — оно управляется через
+      // таблицу Person (в AdminPanel) и не должно перезаписывать логин.
       await widget.auth!.updateProfile(
-        name: updated.name,
         bio: updated.bio,
         phone: updated.phone,
         avatarUrl: updated.avatarPath,
@@ -578,7 +592,7 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
                         width: 34,
                         height: 34,
                         decoration: BoxDecoration(
-                          color: AppColors.primary,
+                          color: Theme.of(context).colorScheme.primary,
                           shape: BoxShape.circle,
                           border:
                           Border.all(color: Colors.white, width: 2),
@@ -647,8 +661,8 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
                         ),
                       )
                     : IconButton(
-                        icon: const Icon(Icons.sim_card_outlined,
-                            color: AppColors.primary),
+                        icon: Icon(Icons.sim_card_outlined,
+                            color: Theme.of(context).colorScheme.primary),
                         tooltip: SimService.canReadNumber
                             ? 'Заполнить с SIM'
                             : 'Показать оператора',
@@ -715,13 +729,34 @@ class ProfileAvatar extends StatelessWidget {
   Widget build(BuildContext context) {
     final path = avatarPath;
     if (path != null && path.isNotEmpty) {
-      // Серверный путь (/uploads/... или абсолютный URL) → NetworkImage
+      // Серверный путь (/uploads/... или абсолютный URL) → NetworkImage / CachedNetworkImage
       if (ApiConfig.isServerMediaPath(path)) {
         final url = ApiConfig.resolveMediaUrl(path);
         if (url != null) {
+          final isGif = url.toLowerCase().endsWith('.gif');
+          if (isGif) {
+            // GIF анимируется только через CachedNetworkImage
+            return ClipOval(
+              child: SizedBox(
+                width: radius * 2,
+                height: radius * 2,
+                child: CachedNetworkImage(
+                  imageUrl: url,
+                  fit: BoxFit.cover,
+                  placeholder: (_, __) => Container(
+                    color: Theme.of(context).colorScheme.primary.withValues(alpha: 0.2),
+                  ),
+                  errorWidget: (_, __, ___) => Container(
+                    color: Theme.of(context).colorScheme.primary.withValues(alpha: 0.2),
+                    child: Icon(Icons.person, size: radius, color: AppColors.textLight),
+                  ),
+                ),
+              ),
+            );
+          }
           return CircleAvatar(
             radius: radius,
-            backgroundColor: AppColors.primary.withValues(alpha: 0.2),
+            backgroundColor: Theme.of(context).colorScheme.primary.withValues(alpha: 0.2),
             backgroundImage: NetworkImage(url),
             onBackgroundImageError: (_, __) {},
           );
@@ -739,7 +774,7 @@ class ProfileAvatar extends StatelessWidget {
     }
     return CircleAvatar(
       radius: radius,
-      backgroundColor: AppColors.primary,
+      backgroundColor: Theme.of(context).colorScheme.primary,
       child: Icon(
         Icons.person,
         size: radius,
@@ -795,7 +830,7 @@ class _ProfileTile extends StatelessWidget {
       color: Theme.of(context).cardColor,
       child: ListTile(
         leading: Icon(icon,
-            color: iconColor ?? AppColors.primary, size: 22),
+            color: iconColor ?? Theme.of(context).colorScheme.primary, size: 22),
         title: Text(
           title,
           style: TextStyle(
@@ -846,7 +881,7 @@ class _EditField extends StatelessWidget {
       decoration: InputDecoration(
         labelText: label,
         hintText: hint,
-        prefixIcon: Icon(icon, color: AppColors.primary),
+        prefixIcon: Icon(icon, color: Theme.of(context).colorScheme.primary),
         suffixIcon: suffixWidget,
         filled: true,
         fillColor: Theme.of(context).cardColor,
@@ -861,7 +896,7 @@ class _EditField extends StatelessWidget {
         focusedBorder: OutlineInputBorder(
           borderRadius: BorderRadius.circular(12),
           borderSide:
-          const BorderSide(color: AppColors.primary, width: 1.5),
+          BorderSide(color: Theme.of(context).colorScheme.primary, width: 1.5),
         ),
       ),
     );
@@ -891,8 +926,8 @@ class _ThemeSwitcherState extends State<_ThemeSwitcher> {
         children: [
           Row(
             children: [
-              const Icon(Icons.brightness_6_outlined,
-                  color: AppColors.primary, size: 22),
+              Icon(Icons.brightness_6_outlined,
+                  color: Theme.of(context).colorScheme.primary, size: 22),
               const SizedBox(width: 12),
               const Text(
                 'Тема оформления',
@@ -953,10 +988,10 @@ class _ThemeChip extends StatelessWidget {
           duration: const Duration(milliseconds: 200),
           padding: const EdgeInsets.symmetric(vertical: 10),
           decoration: BoxDecoration(
-            color: selected ? AppColors.primary : Colors.transparent,
+            color: selected ? Theme.of(context).colorScheme.primary : Colors.transparent,
             borderRadius: BorderRadius.circular(10),
             border: Border.all(
-              color: selected ? AppColors.primary : const Color(0xFFE0E0E0),
+              color: selected ? Theme.of(context).colorScheme.primary : Color(0xFFE0E0E0),
             ),
           ),
           child: Column(
@@ -1036,10 +1071,10 @@ class _RoleChip extends StatelessWidget {
           duration: const Duration(milliseconds: 200),
           padding: const EdgeInsets.symmetric(vertical: 12),
           decoration: BoxDecoration(
-            color: selected ? AppColors.primary : Colors.transparent,
+            color: selected ? Theme.of(context).colorScheme.primary : Colors.transparent,
             borderRadius: BorderRadius.circular(10),
             border: Border.all(
-              color: selected ? AppColors.primary : const Color(0xFFE0E0E0),
+              color: selected ? Theme.of(context).colorScheme.primary : Color(0xFFE0E0E0),
             ),
           ),
           child: Row(
@@ -1100,7 +1135,7 @@ class _GroupPickerField extends StatelessWidget {
           children: [
             Icon(
               Icons.school_outlined,
-              color: AppColors.primary,
+              color: Theme.of(context).colorScheme.primary,
               size: 20,
             ),
             const SizedBox(width: 12),
@@ -1228,7 +1263,7 @@ class _GroupPickerScreenState extends State<GroupPickerScreen> {
                 return ListTile(
                   leading: CircleAvatar(
                     backgroundColor: isSelected
-                        ? AppColors.primary
+                        ? Theme.of(context).colorScheme.primary
                         : Theme.of(context).cardColor,
                     child: Text(
                       group.split('-').first,
@@ -1250,8 +1285,8 @@ class _GroupPickerScreenState extends State<GroupPickerScreen> {
                     ),
                   ),
                   trailing: isSelected
-                      ? const Icon(Icons.check_circle,
-                          color: AppColors.primary)
+                      ? Icon(Icons.check_circle,
+                          color: Theme.of(context).colorScheme.primary)
                       : null,
                   onTap: () => _select(group),
                 );
