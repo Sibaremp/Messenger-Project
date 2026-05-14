@@ -7,3 +7,6 @@ uploads/
 
 # Firebase service account key — never commit
 docs/*.json
+
+# Docker secrets
+.env

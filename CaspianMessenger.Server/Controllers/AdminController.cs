@@ -16,6 +16,38 @@ public class AdminController(
     ImportService importService,
     ILogger<AdminController> logger) : ControllerBase
 {
+    // ── 0. ПЕРВИЧНАЯ НАСТРОЙКА ────────────────────────────────────────────────
+
+    /// <summary>
+    /// Создаёт первого администратора. Работает ТОЛЬКО если таблица Admins пуста.
+    /// После создания первого аккаунта endpoint перестаёт отвечать (403).
+    /// </summary>
+    [HttpPost("setup")]
+    [AllowAnonymous]
+    public async Task<IActionResult> Setup([FromBody] AdminLoginRequest req)
+    {
+        if (await db.Admins.AnyAsync())
+            return StatusCode(403, new { message = "Первичная настройка уже выполнена" });
+
+        if (string.IsNullOrWhiteSpace(req.Login) || req.Login.Length < 3)
+            return BadRequest(new { message = "Логин должен содержать минимум 3 символа" });
+
+        if (string.IsNullOrWhiteSpace(req.Password) || req.Password.Length < 6)
+            return BadRequest(new { message = "Пароль должен содержать минимум 6 символов" });
+
+        var admin = new CaspianMessenger.Server.Models.Admin
+        {
+            Login        = req.Login.Trim(),
+            PasswordHash = BCrypt.Net.BCrypt.HashPassword(req.Password, workFactor: 11)
+        };
+
+        db.Admins.Add(admin);
+        await db.SaveChangesAsync();
+
+        logger.LogInformation("First admin account '{Login}' created via /api/admin/setup", admin.Login);
+        return Ok(new { message = "Администратор создан", login = admin.Login });
+    }
+
     // ── 1. AUTH ──────────────────────────────────────────────────────────────
 
     [HttpPost("login")]
@@ -39,6 +71,65 @@ public class AdminController(
         var token = jwtHelper.GenerateAdminToken(admin!.Login);
         logger.LogInformation("Admin '{Login}' logged in", admin.Login);
         return Ok(new { token });
+    }
+
+    // ── 1b. УПРАВЛЕНИЕ АДМИНИСТРАТОРАМИ ──────────────────────────────────────
+
+    /// GET /api/admin/admins → список аккаунтов администраторов
+    [HttpGet("admins")]
+    [Authorize(Policy = "AdminOnly")]
+    public async Task<IActionResult> GetAdmins()
+    {
+        var admins = await db.Admins
+            .OrderBy(a => a.Id)
+            .Select(a => new { a.Id, a.Login })
+            .ToListAsync();
+        return Ok(admins);
+    }
+
+    /// POST /api/admin/admins — создать нового администратора
+    [HttpPost("admins")]
+    [Authorize(Policy = "AdminOnly")]
+    public async Task<IActionResult> CreateAdmin([FromBody] AdminLoginRequest req)
+    {
+        if (string.IsNullOrWhiteSpace(req.Login) || req.Login.Length < 3)
+            return BadRequest(new { message = "Логин должен содержать минимум 3 символа" });
+
+        if (string.IsNullOrWhiteSpace(req.Password) || req.Password.Length < 6)
+            return BadRequest(new { message = "Пароль должен содержать минимум 6 символов" });
+
+        if (await db.Admins.AnyAsync(a => a.Login == req.Login.Trim()))
+            return Conflict(new { message = "Логин уже занят" });
+
+        var admin = new CaspianMessenger.Server.Models.Admin
+        {
+            Login        = req.Login.Trim(),
+            PasswordHash = BCrypt.Net.BCrypt.HashPassword(req.Password, workFactor: 11)
+        };
+        db.Admins.Add(admin);
+        await db.SaveChangesAsync();
+
+        logger.LogInformation("Admin '{Creator}' created new admin account '{Login}'",
+            User.FindFirst("name")?.Value, admin.Login);
+        return CreatedAtAction(nameof(GetAdmins), new { admin.Id, admin.Login });
+    }
+
+    /// DELETE /api/admin/admins/{id}
+    [HttpDelete("admins/{id:int}")]
+    [Authorize(Policy = "AdminOnly")]
+    public async Task<IActionResult> DeleteAdmin(int id)
+    {
+        var admin = await db.Admins.FindAsync(id);
+        if (admin == null) return NotFound(new { message = "Администратор не найден" });
+
+        if (await db.Admins.CountAsync() <= 1)
+            return BadRequest(new { message = "Нельзя удалить последнего администратора" });
+
+        db.Admins.Remove(admin);
+        await db.SaveChangesAsync();
+
+        logger.LogInformation("Admin account '{Login}' (Id={Id}) deleted", admin.Login, id);
+        return NoContent();
     }
 
     // ── 2. USERS ─────────────────────────────────────────────────────────────

@@ -144,6 +144,23 @@ builder.Services.AddSwaggerGen(c =>
 
 var app = builder.Build();
 
+// ── Auto-migrate on startup (Docker / CI friendly) ────────────────────────────
+// Runs only pending migrations; safe to call every start.
+using (var scope = app.Services.CreateScope())
+{
+    var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+    try
+    {
+        db.Database.Migrate();
+        Log.Information("Database migrations applied successfully");
+    }
+    catch (Exception ex)
+    {
+        Log.Fatal(ex, "Failed to apply database migrations — cannot start");
+        throw;
+    }
+}
+
 if (app.Environment.IsDevelopment())
 {
     app.UseSwagger();
