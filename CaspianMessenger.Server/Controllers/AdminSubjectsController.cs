@@ -19,18 +19,46 @@ public class AdminSubjectsController(
     [HttpGet("subjects")]
     public async Task<IActionResult> GetSubjects()
     {
+        // 1. Загружаем предметы вместе с назначениями
         var subjects = await db.Subjects
+            .Include(s => s.Assignments)
             .OrderBy(s => s.Name)
-            .Select(s => new
+            .ToListAsync();
+
+        // 2. Собираем все уникальные группы среди всех предметов
+        var allGroups = subjects
+            .SelectMany(s => s.Assignments.Select(a => a.GroupName).Distinct())
+            .Distinct()
+            .ToList();
+
+        // 3. Считаем студентов по каждой группе одним запросом
+        var studentsByGroup = await db.People
+            .Where(p => p.Role == "student" && p.Group != null && allGroups.Contains(p.Group))
+            .GroupBy(p => p.Group!)
+            .Select(g => new { group = g.Key, count = g.Count() })
+            .ToDictionaryAsync(x => x.group, x => x.count);
+
+        // 4. Формируем ответ с метриками нагрузки
+        var result = subjects.Select(s =>
+        {
+            var groups       = s.Assignments.Select(a => a.GroupName).Distinct().ToList();
+            var teacherCount = s.Assignments.Select(a => a.PersonId).Distinct().Count();
+            var groupCount   = groups.Count;
+            var studentCount = groups.Sum(g => studentsByGroup.GetValueOrDefault(g, 0));
+
+            return new
             {
                 id              = s.Id,
                 name            = s.Name,
                 createdAt       = s.CreatedAt,
-                assignmentCount = s.Assignments.Count
-            })
-            .ToListAsync();
+                assignmentCount = s.Assignments.Count,
+                groupCount,
+                teacherCount,
+                studentCount
+            };
+        }).ToList();
 
-        return Ok(subjects);
+        return Ok(result);
     }
 
     /// POST /api/admin/subjects

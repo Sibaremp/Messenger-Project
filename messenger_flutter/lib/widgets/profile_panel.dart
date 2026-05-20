@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 import '../app_constants.dart';
+import '../l10n/app_localizations.dart';
 import '../theme.dart' show ThemeProvider, AppThemeMode;
 import '../profile_screen.dart' show UserProfile, ProfileRole, profileFromAuth, ProfileAvatar;
 import '../services/auth_service.dart' as svc;
@@ -144,7 +145,7 @@ class _ProfilePanelState extends State<ProfilePanel> {
     } catch (e) {
       if (!mounted) return;
       setState(() => _saving = false);
-            AppSnack.error(context, 'Не удалось загрузить аватар: $e');
+            AppSnack.error(context, context.l10n.avatarUploadError(e.toString()));
       return;
     }
 
@@ -176,7 +177,7 @@ class _ProfilePanelState extends State<ProfilePanel> {
       _saving = false;
     });
     widget.onAvatarChanged?.call();
-        AppSnack.info(context, 'Профиль сохранён');
+        AppSnack.info(context, context.l10n.profileSaved);
   }
 
   Future<void> _changeLogin() async {
@@ -188,20 +189,20 @@ class _ProfilePanelState extends State<ProfilePanel> {
       context: context,
       builder: (ctx) => StatefulBuilder(
         builder: (ctx, setSt) => AlertDialog(
-          title: const Text('Сменить логин'),
+          title: Text(context.l10n.changeLogin),
           content: Column(mainAxisSize: MainAxisSize.min, children: [
             TextField(
               controller: loginCtrl,
               autofocus: true,
               maxLength: 32,
-              decoration: const InputDecoration(labelText: 'Новый логин'),
+              decoration: InputDecoration(labelText: context.l10n.newLoginLabel),
             ),
             const SizedBox(height: 8),
             TextField(
               controller: passCtrl,
               obscureText: obscure,
               decoration: InputDecoration(
-                labelText: 'Текущий пароль',
+                labelText: context.l10n.currentPassword,
                 suffixIcon: IconButton(
                   icon: Icon(obscure ? Icons.visibility_off : Icons.visibility),
                   onPressed: () => setSt(() => obscure = !obscure),
@@ -212,11 +213,11 @@ class _ProfilePanelState extends State<ProfilePanel> {
           actions: [
             TextButton(
               onPressed: () => Navigator.pop(ctx, false),
-              child: const Text('Отмена'),
+              child: Text(context.l10n.cancel),
             ),
             FilledButton(
               onPressed: () => Navigator.pop(ctx, true),
-              child: const Text('Сохранить'),
+              child: Text(context.l10n.save),
             ),
           ],
         ),
@@ -231,13 +232,13 @@ class _ProfilePanelState extends State<ProfilePanel> {
       await widget.auth.changeLogin(newLogin, password);
       if (!mounted) return;
       _loadProfileLocal();
-            AppSnack.success(context, 'Логин изменён');
+            AppSnack.success(context, context.l10n.loginChanged);
     } on svc.AuthException catch (e) {
       if (!mounted) return;
             AppSnack.info(context, 'e.message');
     } catch (_) {
       if (!mounted) return;
-            AppSnack.error(context, 'Ошибка смены логина');
+            AppSnack.error(context, context.l10n.loginChangeError);
     }
   }
 
@@ -316,7 +317,7 @@ class _ProfilePanelState extends State<ProfilePanel> {
               const SizedBox(height: 8),
               // Имя
               Text(
-                _nameCtrl.text.isNotEmpty ? _nameCtrl.text : 'Имя пользователя',
+                _nameCtrl.text.isNotEmpty ? _nameCtrl.text : context.l10n.usernameLabel,
                 style: TextStyle(
                   fontSize: 24,
                   fontWeight: FontWeight.bold,
@@ -329,7 +330,7 @@ class _ProfilePanelState extends State<ProfilePanel> {
               Align(
                 alignment: Alignment.centerLeft,
                 child: Text(
-                  'ЛИЧНЫЕ ДАННЫЕ',
+                  context.l10n.personalDataHeader,
                   style: TextStyle(
                     fontSize: 11,
                     fontWeight: FontWeight.w700,
@@ -340,7 +341,7 @@ class _ProfilePanelState extends State<ProfilePanel> {
               ),
               const SizedBox(height: 16),
               _UnderlineField(
-                label: 'Имя',
+                label: context.l10n.nameLabel,
                 controller: _nameCtrl,
                 readOnly: true,
                 fieldColor: fieldColor,
@@ -352,7 +353,7 @@ class _ProfilePanelState extends State<ProfilePanel> {
                 children: [
                   Expanded(
                     child: _UnderlineField(
-                      label: 'Логин',
+                      label: context.l10n.loginField,
                       controller: _loginCtrl,
                       readOnly: true,
                       fieldColor: fieldColor,
@@ -360,7 +361,7 @@ class _ProfilePanelState extends State<ProfilePanel> {
                       dividerColor: dividerColor,
                       suffixIcon: IconButton(
                         icon: const Icon(Icons.edit_outlined, size: 16),
-                        tooltip: 'Сменить логин',
+                        tooltip: context.l10n.changeLogin,
                         color: AppColors.subtle,
                         onPressed: _changeLogin,
                       ),
@@ -369,7 +370,7 @@ class _ProfilePanelState extends State<ProfilePanel> {
                   const SizedBox(width: 24),
                   Expanded(
                     child: _UnderlineField(
-                      label: 'Роль',
+                      label: context.l10n.roleLabel,
                       controller: _roleCtrl,
                       readOnly: true,
                       fieldColor: fieldColor,
@@ -384,7 +385,7 @@ class _ProfilePanelState extends State<ProfilePanel> {
                 children: [
                   Expanded(
                     child: _UnderlineField(
-                      label: 'Телефон',
+                      label: context.l10n.phoneLabel,
                       controller: _phoneCtrl,
                       readOnly: true,
                       fieldColor: fieldColor,
@@ -395,7 +396,7 @@ class _ProfilePanelState extends State<ProfilePanel> {
                   const SizedBox(width: 24),
                   Expanded(
                     child: _UnderlineField(
-                      label: 'Учебная группа',
+                      label: context.l10n.academicGroup,
                       controller: _groupCtrl,
                       readOnly: true,
                       fieldColor: fieldColor,
@@ -408,9 +409,9 @@ class _ProfilePanelState extends State<ProfilePanel> {
               const SizedBox(height: 16),
               // ── Описание / О себе ──────────────────────────────────
               _UnderlineField(
-                label: 'О себе',
+                label: context.l10n.bio,
                 controller: _bioCtrl,
-                hint: 'Расскажите немного о себе...',
+                hint: context.l10n.bioHint,
                 fieldColor: fieldColor,
                 labelColor: labelColor,
                 dividerColor: dividerColor,
@@ -422,7 +423,7 @@ class _ProfilePanelState extends State<ProfilePanel> {
               Align(
                 alignment: Alignment.centerLeft,
                 child: Text(
-                  'НАСТРОЙКА ИНТЕРФЕЙСА',
+                  context.l10n.interfaceSettings,
                   style: TextStyle(
                     fontSize: 11,
                     fontWeight: FontWeight.w700,
@@ -472,8 +473,8 @@ class _ProfilePanelState extends State<ProfilePanel> {
                           width: 20, height: 20,
                           child: CircularProgressIndicator(
                               strokeWidth: 2, color: Colors.white))
-                      : const Text('Сохранить изменения',
-                          style: TextStyle(
+                      : Text(context.l10n.saveChangesBtn,
+                          style: const TextStyle(
                               fontSize: 15, fontWeight: FontWeight.w600)),
                 ),
               ),
@@ -488,7 +489,7 @@ class _ProfilePanelState extends State<ProfilePanel> {
                     icon: Icon(Icons.devices_outlined,
                         color: Theme.of(context).colorScheme.primary),
                     label: Text(
-                      'Управление устройствами',
+                      context.l10n.manageDevices,
                       style: TextStyle(
                           color: Theme.of(context).colorScheme.primary,
                           fontWeight: FontWeight.w600),
@@ -504,9 +505,9 @@ class _ProfilePanelState extends State<ProfilePanel> {
               // ── Выйти ───────────────────────────────────────────────
               TextButton(
                 onPressed: widget.onLogout,
-                child: const Text(
-                  'Выйти из аккаунта',
-                  style: TextStyle(color: Colors.red, fontSize: 14),
+                child: Text(
+                  context.l10n.logoutTitle,
+                  style: const TextStyle(color: Colors.red, fontSize: 14),
                 ),
               ),
             ],

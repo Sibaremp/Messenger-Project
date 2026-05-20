@@ -2,6 +2,11 @@
 cmake_minimum_required(VERSION 3.14)
 project(caspian_college_messenger LANGUAGES CXX)
 
+# Allow subdirectories (e.g. Firebase C++ SDK) that declare an older
+# cmake_minimum_required (< 3.5) to configure without a hard error.
+# CMake >= 3.27 removed compatibility with versions below 3.5 by default.
+set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
+
 # The name of the executable created for the application. Change this to change
 # the on-disk name of your application.
 set(BINARY_NAME "caspian_college_messenger")
@@ -9,11 +14,6 @@ set(BINARY_NAME "caspian_college_messenger")
 # Explicitly opt in to modern CMake behaviors to avoid warnings with recent
 # versions of CMake.
 cmake_policy(VERSION 3.14...3.25)
-
-# Workaround: Firebase C++ SDK ships a CMakeLists.txt that declares
-# cmake_minimum_required with a version below 3.5, which CMake 3.27+
-# rejects unless this variable is set beforehand.
-set(CMAKE_POLICY_VERSION_MINIMUM 3.5 CACHE INTERNAL "")
 
 # Define build configuration option.
 get_property(IS_MULTICONFIG GLOBAL PROPERTY GENERATOR_IS_MULTI_CONFIG)

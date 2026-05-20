@@ -14,6 +14,7 @@ import '../widgets/emoji_gif_panel.dart';
 import '../utils/profanity_filter.dart';
 import 'chat_screen.dart' show MediaPreviewPage, MultiMediaPreviewDialog, MultiMediaResult;
 import '../utils/app_snack.dart';
+import '../l10n/app_localizations.dart';
 
 /// Полноэкранный раздел комментариев к посту.
 class CommentsScreen extends StatefulWidget {
@@ -179,7 +180,7 @@ class _CommentsScreenState extends State<CommentsScreen> {
         ? ProfanityFilter.censor(rawText)
         : rawText;
     if (widget.chat.isAcademic && text != rawText && mounted) {
-      _showCensorToast('Комментарий содержал недопустимые слова и был автоматически отредактирован.');
+      _showCensorToast(context.l10n.censoredComment);
     }
     final reply = _replyingTo != null
         ? ReplyInfo(
@@ -255,7 +256,7 @@ class _CommentsScreenState extends State<CommentsScreen> {
     if (!mounted) return;
     final others = all.where((c) => c.id != widget.chat.id).toList();
     if (others.isEmpty) {
-      AppSnack.warn(context, 'Нет других чатов для пересылки');
+      AppSnack.warn(context, context.l10n.noChatsForForward);
       return;
     }
     if (!mounted) return;
@@ -270,11 +271,11 @@ class _CommentsScreenState extends State<CommentsScreen> {
               decoration: BoxDecoration(color: Colors.grey[300],
                   borderRadius: BorderRadius.circular(2))),
           const SizedBox(height: 8),
-          const Padding(
-            padding: EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
             child: Align(alignment: Alignment.centerLeft,
-              child: Text('Переслать в…',
-                  style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16))),
+              child: Text(context.l10n.forwardTo,
+                  style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16))),
           ),
           ...others.map((ch) => ListTile(
             leading: CircleAvatar(
@@ -291,7 +292,7 @@ class _CommentsScreenState extends State<CommentsScreen> {
                     chatId: ch.id, text: cmt.text,
                     senderName: cmt.senderName, attachment: cmt.attachment);
               }
-              if (mounted) AppSnack.success(context, 'Переслано в «${ch.name}»');
+              if (mounted) AppSnack.success(context, context.l10n.forwardedTo(ch.name));
             },
           )),
           const SizedBox(height: 8),
@@ -330,7 +331,7 @@ class _CommentsScreenState extends State<CommentsScreen> {
               backgroundColor: Theme.of(context).colorScheme.primary.withValues(alpha: 0.15),
               child: Icon(Icons.reply, color: Theme.of(context).colorScheme.primary, size: 20),
             ),
-            title: const Text('Ответить'),
+            title: Text(context.l10n.reply),
             onTap: () { Navigator.pop(context); _startReply(c); },
           ),
           if (isMe && c.text.isNotEmpty && c.attachment == null)
@@ -339,7 +340,7 @@ class _CommentsScreenState extends State<CommentsScreen> {
                 backgroundColor: Theme.of(context).colorScheme.primary,
                 child: const Icon(Icons.edit_outlined, color: Colors.white, size: 20),
               ),
-              title: const Text('Редактировать'),
+              title: Text(context.l10n.edit),
               onTap: () { Navigator.pop(context); _startEdit(c); },
             ),
           ListTile(
@@ -347,7 +348,7 @@ class _CommentsScreenState extends State<CommentsScreen> {
               backgroundColor: Theme.of(context).colorScheme.primary,
               child: const Icon(Icons.shortcut, color: Colors.white, size: 20),
             ),
-            title: const Text('Переслать'),
+            title: Text(context.l10n.forward),
             onTap: () { Navigator.pop(context); _forwardComment(c); },
           ),
           ListTile(
@@ -356,14 +357,14 @@ class _CommentsScreenState extends State<CommentsScreen> {
               child: Icon(Icons.check_circle_outline,
                   color: Theme.of(context).colorScheme.primary, size: 20),
             ),
-            title: const Text('Выделить'),
+            title: Text(context.l10n.selectAction),
             onTap: () { Navigator.pop(context); _enterSelectionMode(c); },
           ),
           if (isMe)
             ListTile(
               leading: const CircleAvatar(backgroundColor: Color(0xFFFFEBEE),
                   child: Icon(Icons.delete_outline, color: Colors.red, size: 20)),
-              title: const Text('Удалить', style: TextStyle(color: Colors.red)),
+              title: Text(context.l10n.delete, style: const TextStyle(color: Colors.red)),
               onTap: () { Navigator.pop(context); _deleteComment(c); },
             ),
           const SizedBox(height: 8),
@@ -510,15 +511,14 @@ class _CommentsScreenState extends State<CommentsScreen> {
   Widget _buildDateSeparator(DateTime date) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
     final now = DateTime.now();
+    final l = context.l10n;
     String label;
     if (_isSameDay(date, now)) {
-      label = 'Сегодня';
+      label = l.today;
     } else if (_isSameDay(date, now.subtract(const Duration(days: 1)))) {
-      label = 'Вчера';
+      label = l.yesterday;
     } else {
-      final months = ['янв', 'фев', 'мар', 'апр', 'май', 'июн',
-                      'июл', 'авг', 'сен', 'окт', 'ноя', 'дек'];
-      label = '${date.day} ${months[date.month - 1]}';
+      label = l.shortMonthDate(date.day, date.month);
       if (date.year != now.year) label += ' ${date.year}';
     }
     return Center(
@@ -549,9 +549,10 @@ class _CommentsScreenState extends State<CommentsScreen> {
     final theme  = Theme.of(context);
     final comments = [..._message.comments]
       ..sort((a, b) => a.time.compareTo(b.time));
+    final l = context.l10n;
     final countText = comments.isEmpty
-        ? 'Нет комментариев'
-        : '${comments.length} ${_commentWord(comments.length)}';
+        ? l.noComments
+        : l.commentCount(comments.length);
     final allMedia = comments
         .where((c) => c.attachment != null &&
             (c.attachment!.type == AttachmentType.image ||
@@ -595,13 +596,13 @@ class _CommentsScreenState extends State<CommentsScreen> {
               automaticallyImplyLeading: false,
               leading: IconButton(
                   icon: const Icon(Icons.close), onPressed: _exitSelectionMode),
-              title: Text('${_selectedIds.length} выбрано'),
+              title: Text(l.selectedItems(_selectedIds.length)),
               actions: [
                 if (_selectedIds.isNotEmpty) ...[
                   IconButton(icon: const Icon(Icons.shortcut),
-                      tooltip: 'Переслать', onPressed: _forwardSelected),
+                      tooltip: l.forwardTooltip, onPressed: _forwardSelected),
                   IconButton(icon: const Icon(Icons.delete_outline),
-                      tooltip: 'Удалить', onPressed: _deleteSelected),
+                      tooltip: l.deleteTooltip, onPressed: _deleteSelected),
                 ],
               ],
             )
@@ -617,8 +618,8 @@ class _CommentsScreenState extends State<CommentsScreen> {
               title: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  const Text('Обсуждение',
-                      style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
+                  Text(l.discussion,
+                      style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
                   Text(countText,
                       style: const TextStyle(fontSize: 12, fontWeight: FontWeight.normal)),
                 ],
@@ -654,8 +655,8 @@ class _CommentsScreenState extends State<CommentsScreen> {
                         // ── Разделитель ──────────────────────────────────
                         _DividerPill(
                           label: comments.isEmpty
-                              ? 'Будьте первым, кто прокомментирует'
-                              : 'Начало обсуждения',
+                              ? l.beFirstToComment
+                              : l.discussionStart,
                           isDark: isDark,
                         ),
                         // ── Комментарии с датами ─────────────────────────
@@ -770,7 +771,7 @@ class _CommentsScreenState extends State<CommentsScreen> {
             const SizedBox(height: 2),
             Text(
               _replyingTo!.text.isEmpty
-                  ? (_replyingTo!.attachment != null ? 'Вложение' : '')
+                  ? (_replyingTo!.attachment != null ? context.l10n.attachment : '')
                   : _replyingTo!.text,
               maxLines: 1, overflow: TextOverflow.ellipsis,
               style: TextStyle(fontSize: 13,
@@ -808,7 +809,7 @@ class _CommentsScreenState extends State<CommentsScreen> {
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text('Редактирование',
+            Text(context.l10n.editing,
                 style: TextStyle(color: Theme.of(context).colorScheme.primary,
                     fontSize: 13, fontWeight: FontWeight.w600)),
             const SizedBox(height: 2),
@@ -872,10 +873,11 @@ class _CommentAttachPopupState extends State<_CommentAttachPopup>
   @override
   Widget build(BuildContext context) {
     final color = Theme.of(context).colorScheme.primary;
+    final l = context.l10n;
     final items = [
-      (Icons.photo_library_outlined,     'Фото или видео', widget.onPickGallery),
-      (Icons.camera_alt_outlined,        'Камера',         widget.onPickCamera),
-      (Icons.insert_drive_file_outlined, 'Документ',       widget.onPickDocument),
+      (Icons.photo_library_outlined,     l.photoOrVideo,  widget.onPickGallery),
+      (Icons.camera_alt_outlined,        l.camera,        widget.onPickCamera),
+      (Icons.insert_drive_file_outlined, l.document,      widget.onPickDocument),
     ];
     return FadeTransition(
       opacity: _fade,
@@ -956,13 +958,6 @@ class _DividerPill extends StatelessWidget {
 // Вспомогательные
 // ═══════════════════════════════════════════════════════════════════════════════
 
-String _commentWord(int n) {
-  final mod10 = n % 10, mod100 = n % 100;
-  if (mod100 >= 11 && mod100 <= 19) return 'комментариев';
-  if (mod10 == 1) return 'комментарий';
-  if (mod10 >= 2 && mod10 <= 4) return 'комментария';
-  return 'комментариев';
-}
 
 class _CensorToast extends StatelessWidget {
   final String message;

@@ -40,6 +40,7 @@ class CallService {
   bool _isMuted = false;
   bool _isCameraOff = false;
   bool _isFrontCamera = true;
+  bool _isSpeaker = true;
   bool _initialized = false;
 
   final _iceCandidateCtrl =
@@ -59,6 +60,7 @@ class CallService {
   bool get isMuted => _isMuted;
   bool get isCameraOff => _isCameraOff;
   bool get isFrontCamera => _isFrontCamera;
+  bool get isSpeaker => _isSpeaker;
   MediaStream? get localStream => _localStream;
 
   bool hasPeerConnection(String peerId) => _peerConnections.containsKey(peerId);
@@ -204,6 +206,34 @@ class CallService {
     if (tracks.isEmpty) return;
     await Helper.switchCamera(tracks.first);
     _isFrontCamera = !_isFrontCamera;
+  }
+
+  /// Возвращает список доступных аудиовыходов (наушники, динамик, BT и т.д.)
+  Future<List<MediaDeviceInfo>> getAudioOutputDevices() async {
+    try {
+      final devices = await navigator.mediaDevices.enumerateDevices();
+      return devices.where((d) => d.kind == 'audiooutput').toList();
+    } catch (_) {
+      return [];
+    }
+  }
+
+  Future<void> selectAudioOutput(String deviceId) async {
+    try {
+      await Helper.selectAudioOutput(deviceId);
+      _isSpeaker = true;
+    } catch (_) {}
+  }
+
+  Future<void> toggleSpeaker() async {
+    _isSpeaker = !_isSpeaker;
+    try {
+      // Мобильные платформы: переключаем динамик/трубку
+      await Helper.setSpeakerphoneOn(_isSpeaker);
+    } catch (_) {
+      // На десктопе setSpeakerphoneOn не работает — откатываем флаг
+      _isSpeaker = !_isSpeaker;
+    }
   }
 
   Future<void> closePeerConnection(String peerId) async {

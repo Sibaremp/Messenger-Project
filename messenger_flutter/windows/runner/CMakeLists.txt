@@ -38,9 +38,3 @@ target_include_directories(${BINARY_NAME} PRIVATE "${CMAKE_SOURCE_DIR}")
 
 # Run the Flutter tool portions of the build. This must not be removed.
 add_dependencies(${BINARY_NAME} flutter_assemble)
-
-# Suppress LNK4099 warnings from pre-built Firebase static libraries that
-# ship without PDB debug symbols.
-if(MSVC)
-  target_link_options(${BINARY_NAME} PRIVATE "/ignore:4099")
-endif()

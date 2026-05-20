@@ -1,0 +1,12 @@
+**/.vs
+**/.git
+**/bin
+**/obj
+**/*.user
+**/uploads
+**/TestResults
+
+# secrets — never bake into the image
+.env
+appsettings.Development.json
+docs/

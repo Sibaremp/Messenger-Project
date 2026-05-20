@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
 import '../app_constants.dart';
+import '../l10n/app_localizations.dart';
 import '../services/chat_service.dart';
 
 /// Панель уведомлений для desktop-режима.
@@ -64,7 +65,7 @@ class _NotificationsPanelState extends State<NotificationsPanel> {
       });
     } catch (e) {
       if (!mounted) return;
-      setState(() { _loading = false; _error = 'Не удалось загрузить уведомления'; });
+      setState(() { _loading = false; _error = context.l10n.failedToLoadNotif; });
     }
   }
 
@@ -90,7 +91,7 @@ class _NotificationsPanelState extends State<NotificationsPanel> {
           child: Row(
             children: [
               Text(
-                'Центр уведомлений',
+                context.l10n.notificationCenter,
                 style: TextStyle(
                   fontSize: 24,
                   fontWeight: FontWeight.bold,
@@ -101,7 +102,7 @@ class _NotificationsPanelState extends State<NotificationsPanel> {
               IconButton(
                 icon: const Icon(Icons.refresh),
                 color: AppColors.subtle,
-                tooltip: 'Обновить',
+                tooltip: context.l10n.refresh,
                 onPressed: _load,
               ),
             ],
@@ -110,7 +111,7 @@ class _NotificationsPanelState extends State<NotificationsPanel> {
         Padding(
           padding: const EdgeInsets.symmetric(horizontal: 32),
           child: Text(
-            'Системные уведомления от администратора',
+            context.l10n.adminNotifSubtitle,
             style: TextStyle(fontSize: 13, color: AppColors.subtle),
           ),
         ),
@@ -122,13 +123,13 @@ class _NotificationsPanelState extends State<NotificationsPanel> {
           child: Row(
             children: [
               _FilterChip(
-                label: 'Все',
+                label: context.l10n.allNotif,
                 selected: _selectedFilter == 0,
                 onTap: () => setState(() => _selectedFilter = 0),
               ),
               const SizedBox(width: 8),
               _FilterChip(
-                label: 'За последние сутки',
+                label: context.l10n.lastDay,
                 selected: _selectedFilter == 1,
                 onTap: () => setState(() => _selectedFilter = 1),
               ),
@@ -157,15 +158,15 @@ class _NotificationsPanelState extends State<NotificationsPanel> {
                           const SizedBox(height: 12),
                           Text(_error!, style: TextStyle(color: AppColors.subtle)),
                           const SizedBox(height: 12),
-                          TextButton(onPressed: _load, child: const Text('Повторить')),
+                          TextButton(onPressed: _load, child: Text(context.l10n.retry)),
                         ],
                       ),
                     )
                   : items.isEmpty
                       ? Center(
                           child: Text(
-                            'Нет уведомлений',
-                            style: TextStyle(color: AppColors.subtle, fontSize: 15),
+                            context.l10n.noNotifications,
+                            style: const TextStyle(color: AppColors.subtle, fontSize: 15),
                           ),
                         )
                       : ListView.separated(
@@ -233,10 +234,10 @@ class _NotificationCard extends StatelessWidget {
   final AdminNotification notification;
   const _NotificationCard({required this.notification});
 
-  String _targetLabel(String target) => switch (target.toLowerCase()) {
-    'students' => 'Студенты',
-    'teachers' => 'Преподаватели',
-    _          => 'Все',
+  String _targetLabel(BuildContext context, String target) => switch (target.toLowerCase()) {
+    'students' => context.l10n.studentsLabel,
+    'teachers' => context.l10n.teachersLabel,
+    _          => context.l10n.allNotif,
   };
 
   String _formatTime(DateTime dt) {
@@ -288,7 +289,7 @@ class _NotificationCard extends StatelessWidget {
                       borderRadius: BorderRadius.circular(10),
                     ),
                     child: Text(
-                      _targetLabel(notification.target),
+                      _targetLabel(context, notification.target),
                       style: TextStyle(
                         fontSize: 11,
                         color: Theme.of(context).colorScheme.primary,

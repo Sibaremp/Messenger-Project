@@ -20,6 +20,7 @@ import 'screens/call_screen.dart';
 import 'widgets/notifications_panel.dart';
 import 'screens/search_screen.dart';
 import 'utils/app_snack.dart';
+import 'l10n/app_localizations.dart';
 
 /// Адаптивная оболочка приложения.
 /// - Узкий экран (<800): стандартная мобильная навигация (ChatListScreen).
@@ -91,6 +92,10 @@ class _ResponsiveShellState extends State<ResponsiveShell>
     _incomingCallSub =
         widget.signalingService.onIncomingCall.listen(_onIncomingCall);
 
+    // Убеждаемся что хаб звонков подключён (актуально после логина
+    // когда токен мог быть недоступен при создании SignalingService).
+    widget.signalingService.ensureConnected();
+
     // Wire notification router so tapping a message notification opens the chat.
     if (widget.notifRouter != null) {
       widget.notifRouter!.onOpenChat = _openChatById;
@@ -108,6 +113,11 @@ class _ResponsiveShellState extends State<ResponsiveShell>
 
   void _onIncomingCall(IncomingCallInfo info) {
     if (!mounted) return;
+    // На мобильных ResponsiveShell рендерит ChatListScreen, который сам
+    // подписан на onIncomingCall. Чтобы не было двух диалогов — пропускаем
+    // обработку здесь и отдаём её ChatListScreen.
+    final width = MediaQuery.of(context).size.width;
+    if (width < AppSizes.desktopBreakpoint) return;
     // В сообществах: проверяем может ли пользователь говорить
     final myName = widget.auth.currentUser?.name ?? '';
     final relatedChat = info.chatId != null
@@ -123,8 +133,13 @@ class _ResponsiveShellState extends State<ResponsiveShell>
       barrierColor: Colors.transparent,
       pageBuilder: (ctx, anim, anim2) => IncomingCallOverlay(
         callInfo: info,
-        onAccept: () {
+        onAccept: () async {
           Navigator.of(ctx).pop();
+          // Завершаем предыдущий звонок (если есть), освобождаем камеру/микрофон
+          await CallScreen.forceEndActive();
+          // Небольшая пауза, чтобы предыдущий экран успел unmount
+          await Future.delayed(const Duration(milliseconds: 200));
+          if (!mounted) return;
           Navigator.of(context, rootNavigator: true).push(
             MaterialPageRoute<void>(
               fullscreenDialog: true,
@@ -174,6 +189,8 @@ class _ResponsiveShellState extends State<ResponsiveShell>
           if (idx != -1) {
             _selectedChat = _chats[idx];
           } else {
+            // Chat no longer exists on server — close its notification suppression.
+            NotificationService.instance.closeChat(_selectedChat!.id);
             _selectedChat = null;
           }
         }
@@ -275,6 +292,7 @@ class _ResponsiveShellState extends State<ResponsiveShell>
     setState(() {
       _selectedChat = chat;
       _nav = chat.isAcademic ? SidebarNav.academic : SidebarNav.chat;
+      _isSearching = false;
     });
     // Mark the new chat as open (suppresses incoming notifications for it).
     NotificationService.instance.openChat(chat.id);
@@ -306,12 +324,12 @@ class _ResponsiveShellState extends State<ResponsiveShell>
   }
 
   /// Текст и иконка кнопки в sidebar зависят от вкладки
-  String get _sidebarActionLabel {
+  String _sidebarActionLabel(BuildContext context) {
     if (_activeTabController.index == 1 &&
         (_nav == SidebarNav.chat || _nav == SidebarNav.academic)) {
-      return 'Создать группу';
+      return context.l10n.createGroup;
     }
-    return 'Новый чат';
+    return context.l10n.newChat;
   }
 
   IconData get _sidebarActionIcon => Icons.add;
@@ -330,7 +348,7 @@ class _ResponsiveShellState extends State<ResponsiveShell>
 
     // Академические группы может создавать только преподаватель
     if (isAcademic && widget.auth.currentUser?.isTeacher != true) {
-      AppSnack.info(context, 'Только преподаватель может создавать академические группы');
+      AppSnack.info(context, context.l10n.onlyTeacherCanCreate);
       return;
     }
 
@@ -358,7 +376,7 @@ class _ResponsiveShellState extends State<ResponsiveShell>
                 backgroundColor: Theme.of(context).colorScheme.primary,
                 child: Icon(Icons.group, color: AppColors.textLight),
               ),
-              title: Text(isAcademic ? 'Создать академическую группу' : 'Создать группу',
+              title: Text(isAcademic ? context.l10n.createAcademicGroup : context.l10n.createGroup,
                   style: const TextStyle(fontWeight: FontWeight.w600)),
               onTap: () {
                 Navigator.pop(context);
@@ -370,7 +388,7 @@ class _ResponsiveShellState extends State<ResponsiveShell>
                 backgroundColor: Theme.of(context).colorScheme.primary,
                 child: Icon(Icons.campaign, color: AppColors.textLight),
               ),
-              title: Text(isAcademic ? 'Создать академическое сообщество' : 'Создать сообщество',
+              title: Text(isAcademic ? context.l10n.createAcademicCommunity : context.l10n.createCommunity,
                   style: const TextStyle(fontWeight: FontWeight.w600)),
               onTap: () {
                 Navigator.pop(context);
@@ -385,6 +403,10 @@ class _ResponsiveShellState extends State<ResponsiveShell>
   }
 
   Future<void> _openNewDirectChat() async {
+    // Close notifications for the currently open chat before navigating away.
+    if (_selectedChat != null) {
+      NotificationService.instance.closeChat(_selectedChat!.id);
+    }
     setState(() {
       _selectedChat = null;
       _showContactPicker = true;
@@ -404,10 +426,8 @@ class _ResponsiveShellState extends State<ResponsiveShell>
     if (!_contacts.any((c) => c.name == contact.name)) {
       _contacts.add(contact);
     }
-    setState(() {
-      _selectedChat = chat;
-      _showContactPicker = false;
-    });
+    setState(() => _showContactPicker = false);
+    _selectChat(chat);
     _loadChats();
   }
 
@@ -418,7 +438,7 @@ class _ResponsiveShellState extends State<ResponsiveShell>
         type: type,
         isAcademic: isAcademic,
         contacts: _contacts,
-        creatorName: widget.auth.currentUser?.name ?? 'Я',
+        creatorName: widget.auth.currentUser?.name ?? context.l10n.you,
         onCreated: (name, members, adminName, description) async {
           try {
             final chat = await widget.service.createGroupOrCommunity(
@@ -430,13 +450,11 @@ class _ResponsiveShellState extends State<ResponsiveShell>
               description: description,
             );
             if (!mounted) return;
-            setState(() {
-              _chats.add(chat);
-              _selectedChat = chat;
-            });
+            setState(() => _chats.add(chat));
+            _selectChat(chat);
           } catch (e) {
             if (!mounted) return;
-                        AppSnack.error(context, 'Ошибка: $e');
+                        AppSnack.error(context, context.l10n.profileSaveError(e.toString()));
           }
         },
       ),
@@ -519,7 +537,7 @@ class _ResponsiveShellState extends State<ResponsiveShell>
             },
             onNewChat: _showCreateOptions,
             onLogout: _logout,
-            actionLabel: _sidebarActionLabel,
+            actionLabel: _sidebarActionLabel(context),
             actionIcon: _sidebarActionIcon,
             showActionButton: _showActionButton,
             displayName: widget.auth.currentUser?.displayName,
@@ -574,12 +592,7 @@ class _ResponsiveShellState extends State<ResponsiveShell>
         embedded: true,
         auth: widget.auth,
         signalingService: widget.signalingService,
-        onChatSelected: (chat) {
-          setState(() {
-            _selectedChat = chat;
-            _isSearching = false;
-          });
-        },
+        onChatSelected: (chat) => _selectChat(chat),
       );
     }
 
@@ -636,7 +649,7 @@ class _ResponsiveShellState extends State<ResponsiveShell>
     return Column(
       children: [
         _PanelHeader(
-          title: 'Общение',
+          title: context.l10n.chatSection,
           isDark: isDark,
           isSearching: _isSearching,
           onSearchTap: () => setState(() => _isSearching = true),
@@ -648,7 +661,7 @@ class _ResponsiveShellState extends State<ResponsiveShell>
           labelColor: Theme.of(context).colorScheme.primary,
           unselectedLabelColor: AppColors.subtle,
           labelStyle: const TextStyle(fontWeight: FontWeight.w600, fontSize: 14),
-          tabs: const [Tab(text: 'Личные'), Tab(text: 'Группы')],
+          tabs: [Tab(text: context.l10n.personalTab), Tab(text: context.l10n.groupsTab)],
           onTap: (_) => setState(() {}),
         ),
         Expanded(
@@ -671,7 +684,7 @@ class _ResponsiveShellState extends State<ResponsiveShell>
     return Column(
       children: [
         _PanelHeader(
-          title: 'Академический',
+          title: context.l10n.academicSection,
           isDark: isDark,
           isSearching: _isSearching,
           onSearchTap: () => setState(() => _isSearching = true),
@@ -683,7 +696,7 @@ class _ResponsiveShellState extends State<ResponsiveShell>
           labelColor: Theme.of(context).colorScheme.primary,
           unselectedLabelColor: AppColors.subtle,
           labelStyle: const TextStyle(fontWeight: FontWeight.w600, fontSize: 14),
-          tabs: const [Tab(text: 'Личные'), Tab(text: 'Группы')],
+          tabs: [Tab(text: context.l10n.personalTab), Tab(text: context.l10n.groupsTab)],
           onTap: (_) => setState(() {}),
         ),
         Expanded(
@@ -701,8 +714,8 @@ class _ResponsiveShellState extends State<ResponsiveShell>
 
   Widget _buildDesktopChatList(List<Chat> chats) {
     if (chats.isEmpty) {
-      return const Center(
-        child: Text('Нет чатов', style: TextStyle(color: AppColors.subtle)),
+      return Center(
+        child: Text(context.l10n.noChats, style: const TextStyle(color: AppColors.subtle)),
       );
     }
     return ListView.builder(
@@ -717,10 +730,7 @@ class _ResponsiveShellState extends State<ResponsiveShell>
                   ? Theme.of(context).colorScheme.primary.withValues(alpha: 0.1)
                   : Colors.transparent,
               child: InkWell(
-                onTap: () => setState(() {
-                  _selectedChat = chat;
-                  _isSearching = false;
-                }),
+                onTap: () => _selectChat(chat),
                 child: Padding(
                   padding: const EdgeInsets.symmetric(
                       horizontal: 12, vertical: 10),
@@ -832,7 +842,7 @@ class _PanelHeader extends StatelessWidget {
                   const SizedBox(width: 7),
                   Expanded(
                     child: Text(
-                      'Поиск',
+                      context.l10n.search,
                       style: TextStyle(
                         fontSize: 13,
                         color: AppColors.subtle.withValues(alpha: 0.55),
@@ -873,9 +883,9 @@ class _EmptyPanel extends StatelessWidget {
               size: 64,
               color: AppColors.subtle.withValues(alpha: 0.4)),
           const SizedBox(height: 16),
-          const Text(
-            'Выберите чат',
-            style: TextStyle(color: AppColors.subtle, fontSize: 16),
+          Text(
+            context.l10n.selectChat,
+            style: const TextStyle(color: AppColors.subtle, fontSize: 16),
           ),
         ],
       ),
@@ -966,7 +976,7 @@ class _SimpleContactPickerState extends State<_SimpleContactPicker> {
             ? IconButton(icon: const Icon(Icons.arrow_back), onPressed: widget.onBack)
             : null,
         title: Text(
-          _showTeachers ? 'Преподаватели' : 'Новый чат',
+          _showTeachers ? context.l10n.teachersTitle : context.l10n.newChatDesktop,
           style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w600)),
         bottom: PreferredSize(
           preferredSize: const Size.fromHeight(56),
@@ -976,7 +986,7 @@ class _SimpleContactPickerState extends State<_SimpleContactPicker> {
               controller: _searchController,
               onChanged: (v) => setState(() => _query = v),
               decoration: InputDecoration(
-                hintText: _showTeachers ? 'Поиск преподавателей...' : 'Поиск контактов...',
+                hintText: _showTeachers ? context.l10n.teachersSearch : context.l10n.studentsSearch,
                 hintStyle: TextStyle(
                     color: isDark ? Colors.white38 : Colors.black38),
                 prefixIcon: Icon(Icons.search,
@@ -1007,7 +1017,7 @@ class _SimpleContactPickerState extends State<_SimpleContactPicker> {
       ),
       body: _buildContactList(
         _filtered, isDark,
-        _showTeachers ? 'Нет преподавателей' : 'Нет студентов',
+        _showTeachers ? context.l10n.noTeachers : context.l10n.noStudents,
       ),
     );
   }
@@ -1022,7 +1032,7 @@ class _SimpleContactPickerState extends State<_SimpleContactPicker> {
                 color: isDark ? Colors.white24 : Colors.black26),
             const SizedBox(height: 12),
             Text(
-              _query.isEmpty ? emptyText : 'Ничего не найдено',
+              _query.isEmpty ? emptyText : context.l10n.nothingFound,
               style: TextStyle(
                 color: isDark ? Colors.white38 : Colors.black38, fontSize: 15),
             ),
@@ -1095,7 +1105,7 @@ class _SimpleContactPickerState extends State<_SimpleContactPicker> {
                           decoration: BoxDecoration(
                             color: Theme.of(context).colorScheme.primary.withValues(alpha: 0.12),
                             borderRadius: BorderRadius.circular(10)),
-                          child: Text('Открыть', style: TextStyle(
+                          child: Text(context.l10n.openContact, style: TextStyle(
                             fontSize: 12, color: Theme.of(context).colorScheme.primary,
                             fontWeight: FontWeight.w600)),
                         ),
@@ -1158,7 +1168,7 @@ class _DesktopCreateChatDialogState
   Future<void> _submit() async {
     final name = _nameController.text.trim();
     if (name.isEmpty) {
-      setState(() => _nameError = 'Введите название');
+      setState(() => _nameError = context.l10n.enterNameError);
       return;
     }
     final members = [
@@ -1177,9 +1187,10 @@ class _DesktopCreateChatDialogState
 
   @override
   Widget build(BuildContext context) {
-    final base =
-        widget.type == ChatType.group ? 'Новая группа' : 'Новое сообщество';
-    final title = widget.isAcademic ? '$base (академическая)' : base;
+    final base = widget.type == ChatType.group
+        ? context.l10n.newGroup
+        : context.l10n.newCommunityTitle;
+    final title = widget.isAcademic ? '$base (${context.l10n.academicSection.toLowerCase()})' : base;
     return AlertDialog(
       title: Text(title),
       content: SizedBox(
@@ -1191,7 +1202,7 @@ class _DesktopCreateChatDialogState
               controller: _nameController,
               autofocus: true,
               decoration: InputDecoration(
-                labelText: 'Название',
+                labelText: context.l10n.chatNameLabel,
                 errorText: _nameError,
                 border: const OutlineInputBorder(),
               ),
@@ -1204,9 +1215,9 @@ class _DesktopCreateChatDialogState
               controller: _descriptionController,
               minLines: 1,
               maxLines: 3,
-              decoration: const InputDecoration(
-                labelText: 'Описание (необязательно)',
-                border: OutlineInputBorder(),
+              decoration: InputDecoration(
+                labelText: context.l10n.descriptionOpt,
+                border: const OutlineInputBorder(),
               ),
             ),
             const SizedBox(height: 16),
@@ -1223,12 +1234,12 @@ class _DesktopCreateChatDialogState
       actions: [
         TextButton(
             onPressed: () => Navigator.pop(context),
-            child: const Text('Отмена')),
+            child: Text(context.l10n.cancel)),
         FilledButton(
           onPressed: _submit,
           style:
               FilledButton.styleFrom(backgroundColor: Theme.of(context).colorScheme.primary),
-          child: const Text('Создать'),
+          child: Text(context.l10n.create),
         ),
       ],
     );

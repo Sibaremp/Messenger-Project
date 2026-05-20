@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import '../app_constants.dart';
+import '../l10n/app_localizations.dart';
 import '../profile_screen.dart' show ProfileAvatar;
 
 /// Элемент навигации в боковой панели.
@@ -44,7 +45,7 @@ class Sidebar extends StatelessWidget {
     required this.onSelect,
     required this.onNewChat,
     required this.onLogout,
-    this.actionLabel = 'Новый чат',
+    this.actionLabel = '',
     this.actionIcon = Icons.add,
     this.showActionButton = true,
     this.displayName,
@@ -130,14 +131,14 @@ class Sidebar extends StatelessWidget {
           // ── Навигация ───────────────────────────────────────────
           _NavItem(
             icon: Icons.school_outlined,
-            label: 'Академический',
+            label: context.l10n.academicSection,
             selected: selected == SidebarNav.academic,
             onTap: () => onSelect(SidebarNav.academic),
           ),
           const SizedBox(height: 2),
           _NavItem(
             icon: Icons.chat_bubble_outline,
-            label: 'Общение',
+            label: context.l10n.chatSection,
             selected: selected == SidebarNav.chat,
             badge: chatUnreadCount,
             onTap: () => onSelect(SidebarNav.chat),
@@ -145,7 +146,7 @@ class Sidebar extends StatelessWidget {
           const SizedBox(height: 2),
           _NavItem(
             icon: Icons.settings_outlined,
-            label: 'Настройки',
+            label: context.l10n.settingsTab,
             selected: selected == SidebarNav.profile,
             onTap: () => onSelect(SidebarNav.profile),
           ),
@@ -176,10 +177,10 @@ class Sidebar extends StatelessWidget {
           const SizedBox(height: 4),
 
           // ── Свернуть ─────────────────────────────────────────────
-          _buildCollapseButton(isDark),
+          _buildCollapseButton(context, isDark),
 
           // ── Выйти ───────────────────────────────────────────────
-          _buildLogoutButton(isDark, collapsed: false),
+          _buildLogoutButton(context, isDark, collapsed: false),
 
           const SizedBox(height: 16),
         ],
@@ -208,7 +209,7 @@ class Sidebar extends StatelessWidget {
           _CollapsedNavIcon(
             icon: Icons.school_outlined,
             selected: selected == SidebarNav.academic,
-            tooltip: 'Академический',
+            tooltip: context.l10n.academicSection,
             onTap: () => onSelect(SidebarNav.academic),
           ),
           const SizedBox(height: 2),
@@ -216,14 +217,14 @@ class Sidebar extends StatelessWidget {
             icon: Icons.chat_bubble_outline,
             selected: selected == SidebarNav.chat,
             badge: chatUnreadCount,
-            tooltip: 'Общение',
+            tooltip: context.l10n.chatSection,
             onTap: () => onSelect(SidebarNav.chat),
           ),
           const SizedBox(height: 2),
           _CollapsedNavIcon(
             icon: Icons.settings_outlined,
             selected: selected == SidebarNav.profile,
-            tooltip: 'Настройки',
+            tooltip: context.l10n.settingsTab,
             onTap: () => onSelect(SidebarNav.profile),
           ),
 
@@ -249,7 +250,7 @@ class Sidebar extends StatelessWidget {
 
           // ── Развернуть (иконка) ───────────────────────────────────
           Tooltip(
-            message: 'Развернуть',
+            message: context.l10n.sidebarExpand,
             child: GestureDetector(
               onTap: onToggleCollapse,
               child: SizedBox(
@@ -264,7 +265,7 @@ class Sidebar extends StatelessWidget {
           ),
 
           // ── Выход (иконка) ────────────────────────────────────────
-          _buildLogoutButton(isDark, collapsed: true),
+          _buildLogoutButton(context, isDark, collapsed: true),
 
           const SizedBox(height: 16),
         ],
@@ -278,7 +279,7 @@ class Sidebar extends StatelessWidget {
       {required bool collapsed}) {
     if (collapsed) {
       return Tooltip(
-        message: displayName ?? userName ?? 'Профиль',
+        message: displayName ?? userName ?? context.l10n.profile,
         child: GestureDetector(
           onTap: onSettingsTap ?? () => onSelect(SidebarNav.profile),
           child: Padding(
@@ -310,7 +311,7 @@ class Sidebar extends StatelessWidget {
                     mainAxisSize: MainAxisSize.min,
                     children: [
                       Text(
-                        displayName ?? userName ?? 'Профиль',
+                        displayName ?? userName ?? context.l10n.profile,
                         style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
                         overflow: TextOverflow.ellipsis,
                       ),
@@ -339,7 +340,7 @@ class Sidebar extends StatelessWidget {
                           ? primary
                           : AppColors.subtle,
                     ),
-                    tooltip: 'Уведомления',
+                    tooltip: context.l10n.notificationsTab,
                     onPressed: () => onSelect(SidebarNav.notifications),
                   ),
                 ),
@@ -351,7 +352,7 @@ class Sidebar extends StatelessWidget {
     );
   }
 
-  Widget _buildCollapseButton(bool isDark) {
+  Widget _buildCollapseButton(BuildContext context, bool isDark) {
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 12),
       child: Material(
@@ -367,8 +368,8 @@ class Sidebar extends StatelessWidget {
                 Icon(Icons.chevron_left_rounded,
                     size: 20, color: AppColors.subtle),
                 const SizedBox(width: 12),
-                Text('Свернуть',
-                    style: TextStyle(color: AppColors.subtle, fontSize: 14)),
+                Text(context.l10n.sidebarCollapse,
+                    style: const TextStyle(color: AppColors.subtle, fontSize: 14)),
               ],
             ),
           ),
@@ -389,10 +390,10 @@ class Sidebar extends StatelessWidget {
     );
   }
 
-  Widget _buildLogoutButton(bool isDark, {required bool collapsed}) {
+  Widget _buildLogoutButton(BuildContext context, bool isDark, {required bool collapsed}) {
     if (collapsed) {
       return Tooltip(
-        message: 'Выйти',
+        message: context.l10n.sidebarLogout,
         child: GestureDetector(
           onTap: onLogout,
           child: Padding(
@@ -415,14 +416,14 @@ class Sidebar extends StatelessWidget {
         child: InkWell(
           borderRadius: BorderRadius.circular(10),
           onTap: onLogout,
-          child: const Padding(
-            padding: EdgeInsets.symmetric(horizontal: 12, vertical: 11),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 11),
             child: Row(
               children: [
-                Icon(Icons.logout, size: 20, color: AppColors.subtle),
-                SizedBox(width: 12),
-                Text('Выйти',
-                    style: TextStyle(color: AppColors.subtle, fontSize: 14)),
+                const Icon(Icons.logout, size: 20, color: AppColors.subtle),
+                const SizedBox(width: 12),
+                Text(context.l10n.sidebarLogout,
+                    style: const TextStyle(color: AppColors.subtle, fontSize: 14)),
               ],
             ),
           ),

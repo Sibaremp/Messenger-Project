@@ -15,6 +15,7 @@ import '../app_constants.dart';
 import '../services/api_config.dart' show ApiConfig;
 import '../services/chat_service.dart';
 import '../services/signaling_service.dart';
+import '../services/call_state.dart' show IncomingCallInfo;
 import '../widgets/chat_widgets.dart';
 import '../widgets/member_picker.dart';
 import '../widgets/emoji_gif_panel.dart';
@@ -28,6 +29,7 @@ import 'group_profile_screen.dart';
 import 'call_screen.dart';
 import '../theme.dart' show CustomChatTheme;
 import '../utils/app_snack.dart';
+import '../l10n/app_localizations.dart';
 
 // ── Элементы плоского списка (разделитель дат + сообщение) ───────────────────
 
@@ -182,6 +184,9 @@ class _ChatScreenState extends State<ChatScreen> {
   // ── Подписка на realtime-события (SignalR) ───────────
   StreamSubscription<ChatEvent>? _eventSub;
 
+  // ── Активный групповой звонок (баннер "Присоединиться") ──
+  IncomingCallInfo? _activeGroupCall;
+
   @override
   void initState() {
     super.initState();
@@ -189,11 +194,25 @@ class _ChatScreenState extends State<ChatScreen> {
     _setMessages(widget.chat.messages);
     _loadAvatar();
     _controller.addListener(_onTextChanged);
-    // Если сервер ещё не прислал сообщения — показываем кэш немедленно.
+    _checkActiveGroupCall();
+    // Показываем кэш немедленно, только если:
+    //  1. Сервер не прислал ни одного сообщения (чат ещё не загрузился)
+    //  2. Кэш содержит данные (не пустой — пустой кэш означает «чат очищен»)
+    // Это предотвращает «воскрешение» удалённых сообщений из устаревшего кэша.
     if (widget.chat.messages.isEmpty) {
       LocalCacheService.instance.loadMessages(widget.chat.id).then((cached) {
         if (cached != null && cached.isNotEmpty && mounted && _messages.isEmpty) {
-          setState(() => _setMessages(cached));
+          // Дополнительная проверка: кэш актуален только если он был сохранён
+          // не позже 24 часов назад. Более старый кэш игнорируем — он мог
+          // содержать сообщения, удалённые с тех пор.
+          LocalCacheService.instance.lastSaved(widget.chat.id).then((ts) {
+            if (!mounted) return;
+            final isStale = ts == null ||
+                DateTime.now().difference(ts) > const Duration(hours: 24);
+            if (!isStale && _messages.isEmpty) {
+              setState(() => _setMessages(cached));
+            }
+          });
         }
       });
     }
@@ -284,7 +303,7 @@ class _ChatScreenState extends State<ChatScreen> {
         if (chat.id != _currentChat.id) return;
         setState(() {
           _currentChat = chat;
-          _setMessages(chat.messages);
+          _mergeMessages(chat.messages);
         });
       case ChatDeleted():
         // Удалили текущий чат — ничего не делаем тут, родитель закроет экран.
@@ -392,13 +411,13 @@ class _ChatScreenState extends State<ChatScreen> {
         : rawText;
     // Уведомляем пользователя, если текст был изменён.
     if (_currentChat.isAcademic && text != rawText && mounted) {
-      _showCensorToast('Сообщение содержало недопустимые слова и было автоматически отредактировано.');
+      _showCensorToast(context.l10n.msgCensored);
     }
 
     final reply = _replyingTo != null
         ? ReplyInfo(
             messageId: _replyingTo!.id,
-            senderName: _replyingTo!.senderName ?? (_replyingTo!.isMe ? 'Вы' : _currentChat.name),
+            senderName: _replyingTo!.senderName ?? (_replyingTo!.isMe ? context.l10n.you : _currentChat.name),
             text: _replyingTo!.text,
           )
         : null;
@@ -437,7 +456,7 @@ class _ChatScreenState extends State<ChatScreen> {
       if (!mounted) return;
       setState(() {
         _isUploadingFile = false;
-        _setMessages(updated.messages);
+        _mergeMessages(updated.messages);
         _currentChat = updated;
         _replyingTo = null;
       });
@@ -446,7 +465,7 @@ class _ChatScreenState extends State<ChatScreen> {
     } catch (e) {
       if (!mounted) return;
       setState(() => _isUploadingFile = false);
-            AppSnack.error(context, 'Ошибка отправки: $e');
+            AppSnack.error(context, context.l10n.sendError(e.toString()));
     }
   }
 
@@ -498,13 +517,13 @@ class _ChatScreenState extends State<ChatScreen> {
       );
       if (!mounted) return;
       setState(() {
-        _setMessages(updated.messages);
+        _mergeMessages(updated.messages);
         _currentChat = updated;
       });
       widget.onChatUpdated(updated);
     } catch (e) {
       if (!mounted) return;
-            AppSnack.error(context, 'Не удалось сохранить изменения: $e');
+            AppSnack.error(context, context.l10n.saveChangesError(e.toString()));
     }
   }
 
@@ -520,15 +539,12 @@ class _ChatScreenState extends State<ChatScreen> {
 
   // ── Удаление ──────────────────────────────────────────
   Future<void> _deleteMessage(Message message) async {
-    final updated = await widget.service.deleteMessages(
-      chatId: _currentChat.id,
-      messageIds: [message.id],
-    );
-    if (!mounted) return;
+    // Оптимистичное удаление: убираем сообщение немедленно, не ждём сервера.
+    final previousMessages = List<Message>.from(_messages);
+    final previousEditingMessage = _editingMessage;
+    final previousReplyingTo    = _replyingTo;
     setState(() {
-      _setMessages(updated.messages);
-      _currentChat = updated;
-      // Сбрасываем режим редактирования / ответа, если они указывали на удалённое сообщение.
+      _setMessages(_messages.where((m) => m.id != message.id).toList());
       if (_editingMessage?.id == message.id) {
         _editingMessage = null;
         _controller.clear();
@@ -538,14 +554,48 @@ class _ChatScreenState extends State<ChatScreen> {
       }
       if (_replyingTo?.id == message.id) _replyingTo = null;
     });
-    widget.onChatUpdated(updated);
+
+    try {
+      final updated = await widget.service.deleteMessages(
+        chatId: _currentChat.id,
+        messageIds: [message.id],
+      );
+      if (!mounted) return;
+      setState(() => _currentChat = updated);
+      widget.onChatUpdated(updated);
+    } catch (e) {
+      // Восстанавливаем список при ошибке сервера.
+      if (!mounted) return;
+      setState(() {
+        _setMessages(previousMessages);
+        _editingMessage = previousEditingMessage;
+        _replyingTo     = previousReplyingTo;
+      });
+      AppSnack.error(context, context.l10n.deleteError(e.toString()));
+    }
   }
 
   Future<void> _deleteSelected() async {
     final ids = List<String>.from(_selectedIds);
+    final idSet = ids.toSet();
+    // Оптимистичное удаление нескольких сообщений.
+    final previousMessages      = List<Message>.from(_messages);
+    final previousEditingMessage = _editingMessage;
+    final previousReplyingTo    = _replyingTo;
     setState(() {
       _selectedIds.clear();
       _isSelectionMode = false;
+      _setMessages(_messages.where((m) => !idSet.contains(m.id)).toList());
+      if (_editingMessage != null && idSet.contains(_editingMessage!.id)) {
+        _editingMessage = null;
+        _controller.clear();
+        _pendingMentions.clear();
+        _mentionQuery = null;
+        _mentionStart = null;
+      }
+      if (_replyingTo != null && idSet.contains(_replyingTo!.id)) {
+        _replyingTo = null;
+      }
     });
 
     try {
@@ -554,25 +604,17 @@ class _ChatScreenState extends State<ChatScreen> {
         messageIds: ids,
       );
       if (!mounted) return;
-      setState(() {
-        _setMessages(updated.messages);
-        _currentChat = updated;
-        // Сбрасываем режим редактирования / ответа, если их сообщения удалены.
-        if (_editingMessage != null && ids.contains(_editingMessage!.id)) {
-          _editingMessage = null;
-          _controller.clear();
-          _pendingMentions.clear();
-          _mentionQuery = null;
-          _mentionStart = null;
-        }
-        if (_replyingTo != null && ids.contains(_replyingTo!.id)) {
-          _replyingTo = null;
-        }
-      });
+      setState(() => _currentChat = updated);
       widget.onChatUpdated(updated);
     } catch (e) {
+      // Восстанавливаем список при ошибке сервера.
       if (!mounted) return;
-            AppSnack.error(context, 'Ошибка удаления: $e');
+      setState(() {
+        _setMessages(previousMessages);
+        _editingMessage = previousEditingMessage;
+        _replyingTo     = previousReplyingTo;
+      });
+      AppSnack.error(context, context.l10n.deleteError(e.toString()));
     }
   }
 
@@ -615,7 +657,7 @@ class _ChatScreenState extends State<ChatScreen> {
     final others = allChats.where((c) => c.id != _currentChat.id).toList();
     if (others.isEmpty) {
       if (mounted) {
-                AppSnack.warn(context, 'Нет других чатов для пересылки');
+                AppSnack.warn(context, context.l10n.noChatsForForward);
       }
       return;
     }
@@ -638,12 +680,12 @@ class _ChatScreenState extends State<ChatScreen> {
               ),
             ),
             const SizedBox(height: 8),
-            const Padding(
-              padding: EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
               child: Align(
                 alignment: Alignment.centerLeft,
-                child: Text('Переслать в...',
-                    style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                child: Text(context.l10n.forwardTo,
+                    style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
               ),
             ),
             ...others.map((c) => ListTile(
@@ -668,7 +710,7 @@ class _ChatScreenState extends State<ChatScreen> {
     );
     if (!mounted) return;
     widget.onChatUpdated(updated);
-        AppSnack.success(context, 'Переслано в «${target.name}»');
+        AppSnack.success(context, context.l10n.forwardedTo(target.name));
   }
 
   // ── Контекстное меню по долгому нажатию ──────────────
@@ -697,7 +739,7 @@ class _ChatScreenState extends State<ChatScreen> {
                 backgroundColor: Theme.of(context).colorScheme.primary.withValues(alpha: 0.15),
                 child: Icon(Icons.reply, color: Theme.of(context).colorScheme.primary, size: 20),
               ),
-              title: const Text('Ответить'),
+              title: Text(context.l10n.replyMessage),
               onTap: () { Navigator.pop(context); _startReply(message); },
             ),
             // Редактировать (только своё текстовое сообщение)
@@ -709,7 +751,7 @@ class _ChatScreenState extends State<ChatScreen> {
                   backgroundColor: Theme.of(context).colorScheme.primary,
                   child: Icon(Icons.edit_outlined, color: Colors.white, size: 20),
                 ),
-                title: const Text('Редактировать'),
+                title: Text(context.l10n.editMessage),
                 onTap: () { Navigator.pop(context); _startEdit(message); },
               ),
             // Переслать
@@ -718,7 +760,7 @@ class _ChatScreenState extends State<ChatScreen> {
                 backgroundColor: Theme.of(context).colorScheme.primary,
                 child: Icon(Icons.shortcut, color: Colors.white, size: 20),
               ),
-              title: const Text('Переслать'),
+              title: Text(context.l10n.forwardMessage),
               onTap: () { Navigator.pop(context); _showForwardDialog([message]); },
             ),
             // Выделить
@@ -728,7 +770,7 @@ class _ChatScreenState extends State<ChatScreen> {
                 child: Icon(Icons.check_circle_outline,
                     color: Theme.of(context).colorScheme.primary, size: 20),
               ),
-              title: const Text('Выделить'),
+              title: Text(context.l10n.selectMessage),
               onTap: () { Navigator.pop(context); _enterSelectionMode(message); },
             ),
             // Закрепить / открепить
@@ -744,7 +786,7 @@ class _ChatScreenState extends State<ChatScreen> {
                       size: 20,
                     ),
                   ),
-                  title: Text(isPinned ? 'Открепить' : 'Закрепить'),
+                  title: Text(isPinned ? context.l10n.unpinMessage : context.l10n.pinMessage),
                   onTap: () {
                     Navigator.pop(context);
                     if (isPinned) {
@@ -763,8 +805,8 @@ class _ChatScreenState extends State<ChatScreen> {
                   backgroundColor: Color(0xFFFFEBEE),
                   child: Icon(Icons.delete_outline, color: Colors.red, size: 20),
                 ),
-                title: const Text('Удалить',
-                    style: TextStyle(color: Colors.red)),
+                title: Text(context.l10n.deleteMessage,
+                    style: const TextStyle(color: Colors.red)),
                 onTap: () { Navigator.pop(context); _deleteMessage(message); },
               ),
             const SizedBox(height: 8),
@@ -980,7 +1022,7 @@ class _ChatScreenState extends State<ChatScreen> {
         .toList();
     if (!mounted) return;
     if (available.isEmpty) {
-            AppSnack.warn(context, 'Все контакты уже в этой группе');
+            AppSnack.warn(context, context.l10n.allAlreadyInGroup);
       return;
     }
 
@@ -1024,17 +1066,9 @@ class _ChatScreenState extends State<ChatScreen> {
     }
     if (!mounted) return;
     final msg = failed == 0
-        ? 'Приглашение отправлено ${_inviteWord(sent)}'
-        : 'Отправлено: $sent, ошибок: $failed';
+        ? context.l10n.inviteSent(sent)
+        : context.l10n.inviteSentReport(sent, failed);
     AppSnack.info(context, msg);
-  }
-
-  String _inviteWord(int n) {
-    final m10 = n % 10, m100 = n % 100;
-    if (m100 >= 11 && m100 <= 19) return '$n получателям';
-    if (m10 == 1) return '$n получателю';
-    if (m10 >= 2 && m10 <= 4) return '$n получателям';
-    return '$n получателям';
   }
 
   /// Принимает приглашение в группу (текущий пользователь вступает сам).
@@ -1042,7 +1076,7 @@ class _ChatScreenState extends State<ChatScreen> {
     try {
       final joinedChat = await widget.service.joinChat(invite.chatId);
       if (!mounted) return;
-            AppSnack.success(context, 'Вы вступили в «${invite.chatName}»');
+            AppSnack.success(context, context.l10n.joinedGroup(invite.chatName));
       // Открываем чат (embedded → через shell, иначе push)
       if (widget.onOpenDirectChat != null) {
         widget.onOpenDirectChat!(joinedChat);
@@ -1061,8 +1095,8 @@ class _ChatScreenState extends State<ChatScreen> {
     } catch (e) {
       if (!mounted) return;
       final msg = e.toString().contains('Already a member')
-          ? 'Вы уже участник этой группы'
-          : 'Не удалось вступить: $e';
+          ? context.l10n.alreadyMember
+          : context.l10n.joinError(e.toString());
       AppSnack.error(context, msg);
     }
   }
@@ -1083,20 +1117,21 @@ class _ChatScreenState extends State<ChatScreen> {
       chatId: _currentChat.id,
       messageId: message.id,
       text: text,
-      senderName: widget.auth?.currentUser?.name ?? 'Я',
+      senderName: widget.auth?.currentUser?.name ?? context.l10n.you,
       attachment: attachment,
       replyTo: replyTo,
     );
     if (!mounted) return null;
     setState(() {
-      _setMessages(updated.messages);
+      _mergeMessages(updated.messages);
       _currentChat = updated;
       if (_commentsMessage != null) {
-        _commentsMessage = updated.messages.firstWhere((m) => m.id == message.id);
+        _commentsMessage = _messages.firstWhere((m) => m.id == message.id,
+            orElse: () => _commentsMessage!);
       }
     });
     widget.onChatUpdated(updated);
-    return updated.messages.firstWhere((m) => m.id == message.id);
+    return _messages.firstWhere((m) => m.id == message.id, orElse: () => message);
   }
 
   Future<Message?> _commentOnEdit(Message message, String commentId, String newText) async {
@@ -1108,14 +1143,15 @@ class _ChatScreenState extends State<ChatScreen> {
     );
     if (!mounted) return null;
     setState(() {
-      _setMessages(updated.messages);
+      _mergeMessages(updated.messages);
       _currentChat = updated;
       if (_commentsMessage != null) {
-        _commentsMessage = updated.messages.firstWhere((m) => m.id == message.id);
+        _commentsMessage = _messages.firstWhere((m) => m.id == message.id,
+            orElse: () => _commentsMessage!);
       }
     });
     widget.onChatUpdated(updated);
-    return updated.messages.firstWhere((m) => m.id == message.id);
+    return _messages.firstWhere((m) => m.id == message.id, orElse: () => message);
   }
 
   Future<Message?> _commentOnDelete(Message message, List<String> commentIds) async {
@@ -1126,14 +1162,15 @@ class _ChatScreenState extends State<ChatScreen> {
     );
     if (!mounted) return null;
     setState(() {
-      _setMessages(updated.messages);
+      _mergeMessages(updated.messages);
       _currentChat = updated;
       if (_commentsMessage != null) {
-        _commentsMessage = updated.messages.firstWhere((m) => m.id == message.id);
+        _commentsMessage = _messages.firstWhere((m) => m.id == message.id,
+            orElse: () => _commentsMessage!);
       }
     });
     widget.onChatUpdated(updated);
-    return updated.messages.firstWhere((m) => m.id == message.id);
+    return _messages.firstWhere((m) => m.id == message.id, orElse: () => message);
   }
 
   void _openComments(Message message) {
@@ -1250,6 +1287,57 @@ class _ChatScreenState extends State<ChatScreen> {
     );
   }
 
+  /// Проверяет наличие активного группового звонка и показывает баннер.
+  void _checkActiveGroupCall() {
+    final signaling = widget.signalingService;
+    if (signaling == null) return;
+    final chat = _currentChat;
+    if (chat.type == ChatType.direct) return;
+    signaling.fetchActiveCallForChat(chat.id).then((info) {
+      if (!mounted) return;
+      setState(() => _activeGroupCall = info);
+    });
+  }
+
+  /// Присоединяется к уже идущему групповому звонку.
+  void _joinActiveCall(IncomingCallInfo info) {
+    final signaling = widget.signalingService;
+    final auth = widget.auth;
+    if (signaling == null || auth == null) return;
+    final chat = _currentChat;
+    final myName = auth.currentUser?.name ?? '';
+    final groupIds = chat.members
+        .where((m) => m.name != myName)
+        .map((m) => m.userId ?? m.name)
+        .toList();
+    final groupNames = chat.members
+        .where((m) => m.name != myName)
+        .map((m) => m.name)
+        .toList();
+    final canSpeak = chat.type != ChatType.community || chat.isCreatorOrAdmin(myName);
+    Navigator.of(context, rootNavigator: true).push(
+      MaterialPageRoute<void>(
+        fullscreenDialog: true,
+        builder: (_) => CallScreen(
+          callId: info.callId,
+          peerId: info.callerId,
+          peerName: info.callerName,
+          isVideo: info.isVideo,
+          isOutgoing: false,
+          isGroup: true,
+          groupParticipantIds: groupIds,
+          groupParticipantNames: groupNames,
+          chatId: chat.id,
+          signalingService: signaling,
+          auth: auth,
+          canSpeak: canSpeak,
+        ),
+      ),
+    ).then((_) {
+      if (mounted) setState(() => _activeGroupCall = null);
+    });
+  }
+
   /// Открывает профиль группы / сообщества (только для не-личных чатов).
   Future<void> _openGroupProfile() async {
     if (widget.embedded) {
@@ -1318,7 +1406,7 @@ class _ChatScreenState extends State<ChatScreen> {
       );
     } catch (e) {
       if (!mounted) return;
-            AppSnack.error(context, 'Не удалось открыть чат: $e');
+            AppSnack.error(context, context.l10n.openChatError(e.toString()));
     }
   }
 
@@ -1413,6 +1501,30 @@ class _ChatScreenState extends State<ChatScreen> {
     LocalCacheService.instance.saveMessages(_currentChat.id, _messages);
   }
 
+  /// Умное объединение ответа сервера с локальным списком.
+  ///
+  /// В отличие от [_setMessages], НЕ заменяет список целиком:
+  ///  • обновляет существующие сообщения (статус, текст, правки и т.д.),
+  ///  • добавляет новые сообщения из [incoming],
+  ///  • сохраняет уже загруженные сообщения, которых нет в [incoming].
+  ///
+  /// Это предотвращает потерю страниц истории и «воскрешение» удалённых
+  /// сообщений, которые сервер возвращает в ответах на другие операции
+  /// (отправка, редактирование, голос в опросе, комментарии и т.д.).
+  void _mergeMessages(List<Message> incoming) {
+    final incomingMap = {for (final m in incoming) m.id: m};
+    // Обновляем существующие сообщения
+    final merged = _messages
+        .map((m) => incomingMap.containsKey(m.id) ? incomingMap[m.id]! : m)
+        .toList();
+    // Добавляем новые сообщения (которых ещё нет локально)
+    final existingIds = {for (final m in merged) m.id};
+    for (final m in incoming) {
+      if (!existingIds.contains(m.id)) merged.add(m);
+    }
+    _setMessages(merged);
+  }
+
   // ── Эмодзи / GIF ─────────────────────────────────────
   void _toggleEmojiPanel() {
     setState(() => _showEmojiPanel = !_showEmojiPanel);
@@ -1437,7 +1549,7 @@ class _ChatScreenState extends State<ChatScreen> {
         ? ReplyInfo(
             messageId: _replyingTo!.id,
             senderName: _replyingTo!.senderName ??
-                (_replyingTo!.isMe ? 'Вы' : _currentChat.name),
+                (_replyingTo!.isMe ? context.l10n.you : _currentChat.name),
             text: _replyingTo!.text,
           )
         : null;
@@ -1450,14 +1562,14 @@ class _ChatScreenState extends State<ChatScreen> {
       );
       if (!mounted) return;
       setState(() {
-        _setMessages(updated.messages);
+        _mergeMessages(updated.messages);
         _currentChat = updated;
       });
       widget.onChatUpdated(updated);
       _scrollToBottom();
     } catch (e) {
       if (!mounted) return;
-      AppSnack.error(context, 'Ошибка отправки GIF: $e');
+      AppSnack.error(context, context.l10n.gifSendError(e.toString()));
     }
   }
 
@@ -1604,7 +1716,7 @@ class _ChatScreenState extends State<ChatScreen> {
     if (pinned.contains(message.id)) return;
     if (pinned.length >= ChatService.maxPinnedMessages) {
       if (mounted) {
-                AppSnack.warn(context, 'Можно закрепить не более ${ChatService.maxPinnedMessages} сообщений');
+                AppSnack.warn(context, context.l10n.maxPinnedMsg(ChatService.maxPinnedMessages));
       }
       return;
     }
@@ -1618,7 +1730,7 @@ class _ChatScreenState extends State<ChatScreen> {
       widget.onChatUpdated(updated);
     } catch (e) {
       if (!mounted) return;
-            AppSnack.error(context, 'Ошибка: $e');
+            AppSnack.error(context, context.l10n.profileSaveError(e.toString()));
     }
   }
 
@@ -1636,7 +1748,7 @@ class _ChatScreenState extends State<ChatScreen> {
       widget.onChatUpdated(updated);
     } catch (e) {
       if (!mounted) return;
-            AppSnack.error(context, 'Ошибка: $e');
+            AppSnack.error(context, context.l10n.profileSaveError(e.toString()));
     }
   }
 
@@ -1832,8 +1944,8 @@ class _ChatScreenState extends State<ChatScreen> {
               ),
               title: const Text('@all',
                   style: TextStyle(fontWeight: FontWeight.w600)),
-              subtitle: const Text('Упомянуть всех',
-                  style: TextStyle(fontSize: 11)),
+              subtitle: Text(context.l10n.mentionAll,
+                  style: const TextStyle(fontSize: 11)),
               onTap: _insertMentionAll,
             ),
           ...members.map((m) {
@@ -1862,9 +1974,9 @@ class _ChatScreenState extends State<ChatScreen> {
                         if (m.group != null)
                           Text(m.group!, style: const TextStyle(fontSize: 11)),
                         if (!hasServerId)
-                          const Text(
-                            'Упоминание только визуальное (сервер не выдал ID)',
-                            style: TextStyle(fontSize: 10, color: AppColors.subtle),
+                          Text(
+                            context.l10n.mentionVisualOnly,
+                            style: const TextStyle(fontSize: 10, color: AppColors.subtle),
                           ),
                       ],
                     )
@@ -1892,11 +2004,11 @@ class _ChatScreenState extends State<ChatScreen> {
         userId:    widget.auth?.currentUser?.name ?? 'me',
       );
       if (!mounted) return;
-      setState(() { _setMessages(updated.messages); _currentChat = updated; });
+      setState(() { _mergeMessages(updated.messages); _currentChat = updated; });
       widget.onChatUpdated(updated);
     } catch (e) {
       if (!mounted) return;
-            AppSnack.error(context, 'Ошибка голосования: $e');
+            AppSnack.error(context, context.l10n.pollVoteError);
     }
   }
 
@@ -1907,11 +2019,11 @@ class _ChatScreenState extends State<ChatScreen> {
         messageId: messageId,
       );
       if (!mounted) return;
-      setState(() { _setMessages(updated.messages); _currentChat = updated; });
+      setState(() { _mergeMessages(updated.messages); _currentChat = updated; });
       widget.onChatUpdated(updated);
     } catch (e) {
       if (!mounted) return;
-            AppSnack.error(context, 'Ошибка: $e');
+            AppSnack.error(context, context.l10n.profileSaveError(e.toString()));
     }
   }
 
@@ -1927,12 +2039,12 @@ class _ChatScreenState extends State<ChatScreen> {
         deadline:      draft.deadline,
       );
       if (!mounted) return;
-      setState(() { _setMessages(updated.messages); _currentChat = updated; });
+      setState(() { _mergeMessages(updated.messages); _currentChat = updated; });
       widget.onChatUpdated(updated);
       _scrollToBottom();
     } catch (e) {
       if (!mounted) return;
-            AppSnack.error(context, 'Ошибка создания опроса: $e');
+            AppSnack.error(context, context.l10n.profileSaveError(e.toString()));
     }
   }
 
@@ -1961,17 +2073,17 @@ class _ChatScreenState extends State<ChatScreen> {
                 icon: const Icon(Icons.close),
                 onPressed: _exitSelectionMode,
               ),
-              title: Text('${_selectedIds.length} выбрано'),
+              title: Text(context.l10n.selectedItems(_selectedIds.length)),
               actions: [
                 if (_selectedIds.isNotEmpty) ...[
                   IconButton(
                     icon: const Icon(Icons.reply),
-                    tooltip: 'Переслать',
+                    tooltip: context.l10n.forwardMessage,
                     onPressed: _forwardSelected,
                   ),
                   IconButton(
                     icon: const Icon(Icons.delete_outline),
-                    tooltip: 'Удалить',
+                    tooltip: context.l10n.deleteMessage,
                     onPressed: _deleteSelected,
                   ),
                 ],
@@ -2039,8 +2151,8 @@ class _ChatScreenState extends State<ChatScreen> {
                         if (chat.type != ChatType.direct)
                           Text(
                             chat.type == ChatType.group
-                                ? '${chat.members.length} участников'
-                                : 'Сообщество · ${chat.members.length} подписчиков',
+                                ? context.l10n.memberCount(chat.members.length)
+                                : context.l10n.communitySubscribers(chat.members.length),
                             style: const TextStyle(
                                 fontSize: 12, fontWeight: FontWeight.normal),
                           ),
@@ -2053,12 +2165,12 @@ class _ChatScreenState extends State<ChatScreen> {
                 if (widget.signalingService != null) ...[
                   IconButton(
                     icon: const Icon(Icons.call_outlined),
-                    tooltip: 'Аудио звонок',
+                    tooltip: context.l10n.audioCallTooltip,
                     onPressed: () => _startCall(isVideo: false),
                   ),
                   IconButton(
                     icon: const Icon(Icons.videocam_outlined),
-                    tooltip: 'Видео звонок',
+                    tooltip: context.l10n.videoCallTooltip,
                     onPressed: () => _startCall(isVideo: true),
                   ),
                 ],
@@ -2090,6 +2202,14 @@ class _ChatScreenState extends State<ChatScreen> {
           // ── Индикатор загрузки файла ──────────────────────────────────
           if (_isUploadingFile)
             const LinearProgressIndicator(),
+
+          // ── Баннер активного группового звонка ──────────────────────────
+          if (_activeGroupCall != null)
+            _ActiveCallBanner(
+              info: _activeGroupCall!,
+              onJoin: () => _joinActiveCall(_activeGroupCall!),
+              onDismiss: () => setState(() => _activeGroupCall = null),
+            ),
 
           // ── Бар закреплённых сообщений (Telegram-style) ──
           if (_currentChat.pinnedMessageIds.isNotEmpty)
@@ -2220,7 +2340,7 @@ class _ChatScreenState extends State<ChatScreen> {
                 _ChannelInputHeader(
                   channelName: chat.name,
                   channelAvatarPath: chat.avatarPath,
-                  userName: widget.auth?.currentUser?.name ?? 'Вы',
+                  userName: widget.auth?.currentUser?.name ?? context.l10n.you,
                   userAvatarPath: _myAvatarPath,
                   postAsCommunity: _postAsCommunity,
                   onToggle: () =>
@@ -2434,7 +2554,7 @@ class _ChannelInputHeader extends StatelessWidget {
                       radius: 10,
                     ),
                     const SizedBox(width: 6),
-                    Text('От имени  ',
+                    Text(context.l10n.postAsPrefix,
                         style: TextStyle(fontSize: 12, color: subtle)),
                     Text(channelName,
                         style: TextStyle(
@@ -2446,7 +2566,7 @@ class _ChannelInputHeader extends StatelessWidget {
                     ProfileAvatar(
                         avatarPath: userAvatarPath, radius: 10),
                     const SizedBox(width: 6),
-                    Text('От своего имени',
+                    Text(context.l10n.postAsMyself,
                         style: TextStyle(
                             fontSize: 12,
                             fontWeight: FontWeight.w600,
@@ -2459,7 +2579,7 @@ class _ChannelInputHeader extends StatelessWidget {
             onPressed: onToggle,
             icon: Icon(Icons.swap_horiz_rounded, size: 16, color: primary),
             label: Text(
-              postAsCommunity ? 'Сменить' : 'Сменить',
+              context.l10n.switchSender,
               style: TextStyle(fontSize: 11, color: primary),
             ),
             style: TextButton.styleFrom(
@@ -2495,7 +2615,7 @@ class _ReplyIndicator extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final baseName = message.isMe
-        ? 'Вы'
+        ? context.l10n.you
         : (message.senderName ?? chatName);
     final senderName = (!message.isMe && message.senderGroup != null)
         ? '${message.senderGroup} $baseName'
@@ -2539,7 +2659,7 @@ class _ReplyIndicator extends StatelessWidget {
                 const SizedBox(height: 2),
                 Text(
                   message.text.isEmpty
-                      ? (message.attachment != null ? 'Вложение' : '')
+                      ? (message.attachment != null ? context.l10n.attachment : '')
                       : message.text,
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
@@ -2620,14 +2740,15 @@ class _AttachPopupState extends State<_AttachPopup>
 
   @override
   Widget build(BuildContext context) {
+    final l = context.l10n;
     final items = [
-      (Icons.photo_library_outlined,    'Фото или видео',       widget.onPickGallery),
-      (Icons.camera_alt_outlined,       'Камера',               widget.onPickCamera),
-      (Icons.insert_drive_file_outlined,'Документ',             widget.onPickDocument),
+      (Icons.photo_library_outlined,    l.photoOrVideo,      widget.onPickGallery),
+      (Icons.camera_alt_outlined,       l.camera,            widget.onPickCamera),
+      (Icons.insert_drive_file_outlined,l.document,          widget.onPickDocument),
       if (widget.isGroup) ...[
-        (Icons.bar_chart_rounded,       'Опрос',                widget.onCreatePoll),
+        (Icons.bar_chart_rounded,       l.poll,              widget.onCreatePoll),
         if (widget.onInvite != null)
-          (Icons.person_add_outlined,   'Пригласить в группу',  widget.onInvite!),
+          (Icons.person_add_outlined,   l.inviteToGroup,     widget.onInvite!),
       ],
     ];
 
@@ -2790,7 +2911,7 @@ class _CreatePollDialogState extends State<_CreatePollDialog> {
   void _submit() {
     final question = _questionCtrl.text.trim();
     if (question.isEmpty) {
-            AppSnack.warn(context, 'Введите вопрос');
+            AppSnack.warn(context, context.l10n.pollQuestionLabel);
       return;
     }
     final options = _optionCtrls
@@ -2798,7 +2919,7 @@ class _CreatePollDialogState extends State<_CreatePollDialog> {
         .where((t) => t.isNotEmpty)
         .toList();
     if (options.length < 2) {
-            AppSnack.warn(context, 'Добавьте хотя бы 2 варианта');
+            AppSnack.warn(context, context.l10n.addTwoOptions);
       return;
     }
     Navigator.of(context).pop(_PollDraft(
@@ -2828,9 +2949,9 @@ class _CreatePollDialogState extends State<_CreatePollDialog> {
               Row(children: [
                 Icon(Icons.poll_outlined, color: Theme.of(context).colorScheme.primary),
                 const SizedBox(width: 10),
-                const Expanded(
-                  child: Text('Создать опрос',
-                      style: TextStyle(
+                Expanded(
+                  child: Text(context.l10n.createPoll,
+                      style: const TextStyle(
                           fontSize: 18, fontWeight: FontWeight.bold)),
                 ),
                 IconButton(
@@ -2845,18 +2966,18 @@ class _CreatePollDialogState extends State<_CreatePollDialog> {
               TextField(
                 controller: _questionCtrl,
                 maxLines: 2,
-                decoration: const InputDecoration(
-                  labelText: 'Вопрос *',
-                  hintText: 'Введите вопрос…',
-                  border: OutlineInputBorder(),
+                decoration: InputDecoration(
+                  labelText: context.l10n.pollQuestionLabel,
+                  hintText: context.l10n.pollQuestionHint,
+                  border: const OutlineInputBorder(),
                   contentPadding:
-                      EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                      const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
                 ),
               ),
               const SizedBox(height: 16),
               // ── Варианты ──────────────────────────────
-              const Text('Варианты ответа',
-                  style: TextStyle(
+              Text(context.l10n.pollAnswerOptions,
+                  style: const TextStyle(
                       fontWeight: FontWeight.w600, fontSize: 13)),
               const SizedBox(height: 8),
               ...List.generate(
@@ -2868,8 +2989,7 @@ class _CreatePollDialogState extends State<_CreatePollDialog> {
                       child: TextField(
                         controller: _optionCtrls[i],
                         decoration: InputDecoration(
-                          labelText:
-                              'Вариант ${i + 1}${i < 2 ? ' *' : ''}',
+                          labelText: context.l10n.pollOptionLabel(i + 1) + (i < 2 ? ' *' : ''),
                           border: const OutlineInputBorder(),
                           contentPadding:
                               const EdgeInsets.symmetric(
@@ -2894,19 +3014,19 @@ class _CreatePollDialogState extends State<_CreatePollDialog> {
                 TextButton.icon(
                   onPressed: _addOption,
                   icon: const Icon(Icons.add, size: 18),
-                  label: const Text('Добавить вариант'),
+                  label: Text(context.l10n.pollAddOption),
                   style: TextButton.styleFrom(
                       foregroundColor: Theme.of(context).colorScheme.primary,
                       padding: EdgeInsets.zero),
                 ),
               const Divider(height: 24),
               // ── Настройки ─────────────────────────────
-              const Text('Настройки',
-                  style: TextStyle(
+              Text(context.l10n.pollSettings,
+                  style: const TextStyle(
                       fontWeight: FontWeight.w600, fontSize: 13)),
               const SizedBox(height: 4),
               Row(children: [
-                const Expanded(child: Text('Множественный выбор')),
+                Expanded(child: Text(context.l10n.pollMultipleChoice)),
                 Switch(
                   value: _type == PollType.multiple,
                   onChanged: (v) => setState(() =>
@@ -2915,7 +3035,7 @@ class _CreatePollDialogState extends State<_CreatePollDialog> {
                 ),
               ]),
               Row(children: [
-                const Expanded(child: Text('Анонимный опрос')),
+                Expanded(child: Text(context.l10n.pollAnonymous)),
                 Switch(
                   value: _isAnonymous,
                   onChanged: (v) =>
@@ -2924,8 +3044,7 @@ class _CreatePollDialogState extends State<_CreatePollDialog> {
                 ),
               ]),
               Row(children: [
-                const Expanded(
-                    child: Text('Разрешить изменить голос')),
+                Expanded(child: Text(context.l10n.pollCanChangeVote)),
                 Switch(
                   value: _canChangeVote,
                   onChanged: (v) =>
@@ -2939,8 +3058,8 @@ class _CreatePollDialogState extends State<_CreatePollDialog> {
                     color: Theme.of(context).colorScheme.primary),
                 title: Text(
                   _deadline == null
-                      ? 'Без ограничения по времени'
-                      : 'До ${_fmtDt(_deadline!)}',
+                      ? context.l10n.pollNoDeadline
+                      : context.l10n.pollDeadlineUntil(_fmtDt(_deadline!)),
                 ),
                 trailing: _deadline != null
                     ? IconButton(
@@ -2958,14 +3077,14 @@ class _CreatePollDialogState extends State<_CreatePollDialog> {
                 children: [
                   TextButton(
                     onPressed: () => Navigator.of(context).pop(),
-                    child: const Text('Отмена'),
+                    child: Text(context.l10n.cancel),
                   ),
                   const SizedBox(width: 8),
                   FilledButton(
                     onPressed: _submit,
                     style: FilledButton.styleFrom(
                         backgroundColor: Theme.of(context).colorScheme.primary),
-                    child: const Text('Создать'),
+                    child: Text(context.l10n.createPollBtn),
                   ),
                 ],
               ),
@@ -3052,7 +3171,7 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
                       isVideo
                           ? att.fileName
                           : isImage
-                              ? 'Отправить фото'
+                              ? context.l10n.sendPhoto
                               : att.fileName,
                       style: const TextStyle(
                         color: Colors.white,
@@ -3233,9 +3352,9 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
                     maxLines: null,
                     keyboardType: TextInputType.multiline,
                     textInputAction: TextInputAction.newline,
-                    decoration: const InputDecoration(
-                      hintText: 'Добавьте подпись…',
-                      hintStyle: TextStyle(color: Colors.white38),
+                    decoration: InputDecoration(
+                      hintText: context.l10n.addCaption,
+                      hintStyle: const TextStyle(color: Colors.white38),
                       border: InputBorder.none,
                       isDense: true,
                     ),
@@ -3549,9 +3668,9 @@ class _MultiMediaPreviewDialogState extends State<MultiMediaPreviewDialog> {
     final count = _attachments.length;
     final title = count == 1
         ? (_attachments.first.type == AttachmentType.video
-            ? 'Отправить видео'
-            : 'Отправить фото')
-        : _countLabel(count);
+            ? context.l10n.sendVideo
+            : context.l10n.sendPhoto)
+        : context.l10n.selectedCount(count);
 
     return Dialog(
       backgroundColor: const Color(0xFF1E1E1E),
@@ -3609,8 +3728,8 @@ class _MultiMediaPreviewDialogState extends State<MultiMediaPreviewDialog> {
               child: CheckboxListTile(
                 dense: true,
                 contentPadding: const EdgeInsets.symmetric(horizontal: 8),
-                title: const Text('Отправить как файлы',
-                    style: TextStyle(color: Colors.white70, fontSize: 14)),
+                title: Text(context.l10n.sendAsFiles,
+                    style: const TextStyle(color: Colors.white70, fontSize: 14)),
                 value: _asFiles,
                 onChanged: (v) => setState(() => _asFiles = v ?? false),
                 activeColor: Theme.of(context).colorScheme.primary,
@@ -3633,9 +3752,9 @@ class _MultiMediaPreviewDialogState extends State<MultiMediaPreviewDialog> {
                       maxLines: 3,
                       minLines: 1,
                       keyboardType: TextInputType.multiline,
-                      decoration: const InputDecoration(
-                        hintText: 'Подпись',
-                        hintStyle: TextStyle(color: Colors.white38),
+                      decoration: InputDecoration(
+                        hintText: context.l10n.captionHint,
+                        hintStyle: const TextStyle(color: Colors.white38),
                         border: InputBorder.none,
                         isDense: true,
                         contentPadding: EdgeInsets.zero,
@@ -3655,19 +3774,19 @@ class _MultiMediaPreviewDialogState extends State<MultiMediaPreviewDialog> {
                 children: [
                   TextButton(
                     onPressed: _addMore,
-                    child: Text('Добавить',
+                    child: Text(context.l10n.addMore,
                         style: TextStyle(color: Theme.of(context).colorScheme.primary)),
                   ),
                   const Spacer(),
                   TextButton(
                     onPressed: _cancel,
-                    child: Text('Отмена',
+                    child: Text(context.l10n.cancel,
                         style: TextStyle(color: Colors.white.withValues(alpha: 0.6))),
                   ),
                   const SizedBox(width: 4),
                   TextButton(
                     onPressed: _send,
-                    child: Text('Отправить',
+                    child: Text(context.l10n.send,
                         style: TextStyle(
                             color: Theme.of(context).colorScheme.primary,
                             fontWeight: FontWeight.w600)),
@@ -3681,13 +3800,6 @@ class _MultiMediaPreviewDialogState extends State<MultiMediaPreviewDialog> {
     );
   }
 
-  static String _countLabel(int n) {
-    if (n % 10 == 1 && n % 100 != 11) return 'Выбрано $n изображение';
-    if (n % 10 >= 2 && n % 10 <= 4 && (n % 100 < 10 || n % 100 >= 20)) {
-      return 'Выбрано $n изображения';
-    }
-    return 'Выбрано $n изображений';
-  }
 }
 
 // ── Показывает первый кадр локального видеофайла (без воспроизведения) ────────
@@ -3842,7 +3954,7 @@ class _InvitePickerSheetState extends State<_InvitePickerSheet> {
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         Text(
-                          'Пригласить в группу',
+                          context.l10n.inviteToGroup,
                           style: theme.textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w600),
                         ),
                         Text(
@@ -3858,7 +3970,7 @@ class _InvitePickerSheetState extends State<_InvitePickerSheet> {
                     onPressed: _selected.isEmpty
                         ? null
                         : () => Navigator.pop(context, Set<String>.from(_selected)),
-                    child: Text('Отправить (${_selected.length})'),
+                    child: Text(context.l10n.sendCount(_selected.length)),
                   ),
                 ],
               ),
@@ -3881,6 +3993,55 @@ class _InvitePickerSheetState extends State<_InvitePickerSheet> {
                   ),
                 ],
               ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// ── Баннер активного группового звонка ───────────────────────────────────────
+
+class _ActiveCallBanner extends StatelessWidget {
+  final IncomingCallInfo info;
+  final VoidCallback onJoin;
+  final VoidCallback onDismiss;
+
+  const _ActiveCallBanner({
+    required this.info,
+    required this.onJoin,
+    required this.onDismiss,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final l = context.l10n;
+    return Material(
+      color: theme.colorScheme.primaryContainer,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+        child: Row(
+          children: [
+            const Icon(Icons.group, size: 20),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                l.ongoingGroupCall,
+                style: theme.textTheme.bodyMedium,
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
+            TextButton(
+              onPressed: onJoin,
+              child: Text(l.joinCall),
+            ),
+            IconButton(
+              icon: const Icon(Icons.close, size: 18),
+              padding: EdgeInsets.zero,
+              constraints: const BoxConstraints(),
+              onPressed: onDismiss,
             ),
           ],
         ),

@@ -78,7 +78,7 @@ public class CallsHub(
 
         var callerName = await GetDisplayNameAsync(callerId);
 
-        await callService.CreateCallAsync(callGuid, callerId.ToString(), dto.IsVideo, dto.IsGroup);
+        await callService.CreateCallAsync(callGuid, callerId.ToString(), callerName, dto.IsVideo, dto.IsGroup, dto.ChatId);
         await Groups.AddToGroupAsync(Context.ConnectionId, dto.CallId);
 
         var payload = new
@@ -131,6 +131,16 @@ public class CallsHub(
         });
 
         logger.LogInformation("User {UserId} joined call {CallId}", userId, callId);
+    }
+
+    /// Переподключает текущее соединение к группе звонка без уведомления других.
+    /// Вызывается клиентом после реконнекта SignalR, чтобы снова получать события.
+    public async Task RejoinCall(string callId)
+    {
+        var userId = GetUserId();
+        if (userId == Guid.Empty || string.IsNullOrWhiteSpace(callId)) return;
+        await Groups.AddToGroupAsync(Context.ConnectionId, callId);
+        logger.LogInformation("User {UserId} rejoined call group {CallId}", userId, callId);
     }
 
     /// Участник покидает звонок.

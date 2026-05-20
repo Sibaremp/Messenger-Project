@@ -9,7 +9,9 @@ public class CallService(IServiceScopeFactory scopeFactory, ILogger<CallService>
     // Singleton in-memory state: callId -> ActiveCall
     private static readonly ConcurrentDictionary<Guid, ActiveCall> _calls = new();
 
-    public async Task<ActiveCall> CreateCallAsync(Guid callId, string initiatorId, bool isVideo, bool isGroup)
+    public async Task<ActiveCall> CreateCallAsync(
+        Guid callId, string initiatorId, string initiatorName,
+        bool isVideo, bool isGroup, string? chatId = null)
     {
         var type = isVideo ? "video" : "audio";
         var call = new ActiveCall
@@ -19,6 +21,8 @@ public class CallService(IServiceScopeFactory scopeFactory, ILogger<CallService>
             State = "calling",
             IsGroup = isGroup,
             InitiatorId = initiatorId,
+            InitiatorName = initiatorName,
+            ChatId = chatId,
             Participants = [initiatorId]
         };
         _calls[callId] = call;
@@ -86,6 +90,9 @@ public class CallService(IServiceScopeFactory scopeFactory, ILogger<CallService>
     }
 
     public ActiveCall? GetCall(Guid callId) => _calls.GetValueOrDefault(callId);
+
+    public ActiveCall? GetActiveChatCall(string chatId) =>
+        _calls.Values.FirstOrDefault(c => c.ChatId == chatId && c.State != "ended");
 
     public IEnumerable<ActiveCall> GetUserActiveCalls(string userId) =>
         _calls.Values.Where(c => c.Participants.Contains(userId));

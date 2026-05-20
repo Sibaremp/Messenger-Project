@@ -42,7 +42,7 @@ class _Sidebar extends ConsumerWidget {
           const _SidebarHeader(),
           const SizedBox(height: 8),
           _NavItem(
-            icon: Icons.dashboard_outlined,
+            icon: Icons.apartment_outlined,
             label: 'Главная',
             path: '/dashboard',
             active: location.startsWith('/dashboard'),

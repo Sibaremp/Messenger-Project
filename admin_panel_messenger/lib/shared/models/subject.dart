@@ -2,17 +2,34 @@ class Subject {
   final int id;
   final String name;
   final int assignmentCount;
+  final int groupCount;
+  final int teacherCount;
+  final int studentCount;
 
   const Subject({
     required this.id,
     required this.name,
     required this.assignmentCount,
+    required this.groupCount,
+    required this.teacherCount,
+    required this.studentCount,
   });
+
+  /// Групп на одного преподавателя (0 если нет преподавателей)
+  double get groupsPerTeacher =>
+      teacherCount > 0 ? groupCount / teacherCount : 0;
+
+  /// Студентов на одного преподавателя
+  double get studentsPerTeacher =>
+      teacherCount > 0 ? studentCount / teacherCount : 0;
 
   factory Subject.fromJson(Map<String, dynamic> json) => Subject(
         id: json['id'] as int,
         name: json['name'] as String? ?? '',
         assignmentCount: json['assignmentCount'] as int? ?? 0,
+        groupCount: json['groupCount'] as int? ?? 0,
+        teacherCount: json['teacherCount'] as int? ?? 0,
+        studentCount: json['studentCount'] as int? ?? 0,
       );
 }
 

@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import '../app_constants.dart';
+import '../l10n/app_localizations.dart';
 import '../models.dart' show DeviceSession;
 import '../services/auth_service.dart' as svc;
 import '../services/chat_service.dart' show ChatEvent, SessionTerminated;
@@ -103,11 +104,12 @@ class _DevicesScreenState extends State<DevicesScreen> {
   // ── Завершить конкретный сеанс ────────────────────────────────────────────
 
   Future<void> _terminateSession(DeviceSession session) async {
+    final l = context.l10n;
     final ok = await _confirmDialog(
-      title: 'Завершить сеанс',
-      message: 'Завершить сеанс на ${session.deviceName}?'
-          '${session.location != null ? '\n${session.location}' : ''}',
-      actionLabel: 'Завершить',
+      title: l.terminateSession,
+      message: l.terminateSessionMsg(session.deviceName)
+          + (session.location != null ? '\n${session.location}' : ''),
+      actionLabel: l.terminate,
     );
     if (!ok || !mounted) return;
 
@@ -116,17 +118,18 @@ class _DevicesScreenState extends State<DevicesScreen> {
       await _load();
     } catch (e) {
       if (!mounted) return;
-      _snack('Ошибка: $e');
+      _snack(context.l10n.errorText(e.toString()));
     }
   }
 
   // ── Выйти с этого устройства ──────────────────────────────────────────────
 
   Future<void> _logoutCurrent() async {
+    final l = context.l10n;
     final ok = await _confirmDialog(
-      title: 'Выйти с этого устройства',
-      message: 'Вы выйдете из аккаунта на текущем устройстве.',
-      actionLabel: 'Выйти',
+      title: l.logoutThisDevice,
+      message: l.logoutThisDeviceMsg,
+      actionLabel: l.logoutBtn,
     );
     if (!ok || !mounted) return;
     await widget.auth.logout();
@@ -136,12 +139,11 @@ class _DevicesScreenState extends State<DevicesScreen> {
   // ── Выйти со всех устройств (только мобильные) ────────────────────────────
 
   Future<void> _terminateAll() async {
+    final l = context.l10n;
     final ok = await _confirmDialog(
-      title: 'Выйти со всех устройств',
-      message:
-          'Все активные сеансы будут завершены, включая текущий.\n'
-          'Вы будете перенаправлены на экран входа.',
-      actionLabel: 'Выйти со всех',
+      title: l.logoutAllDevices,
+      message: l.logoutAllDevicesMsg,
+      actionLabel: l.logoutAllBtn,
       isDangerous: true,
     );
     if (!ok || !mounted) return;
@@ -151,7 +153,7 @@ class _DevicesScreenState extends State<DevicesScreen> {
       widget.onLogout();
     } catch (e) {
       if (!mounted) return;
-      _snack('Ошибка: $e');
+      _snack(context.l10n.errorText(e.toString()));
     }
   }
 
@@ -171,7 +173,7 @@ class _DevicesScreenState extends State<DevicesScreen> {
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context, false),
-            child: const Text('Отмена'),
+            child: Text(context.l10n.cancel),
           ),
           FilledButton(
             onPressed: () => Navigator.pop(context, true),
@@ -212,13 +214,14 @@ class _DevicesScreenState extends State<DevicesScreen> {
   };
 
   /// Человекочитаемое время последней активности.
-  String _formatActivity(DateTime time) {
+  String _formatActivity(BuildContext context, DateTime time) {
+    final l = context.l10n;
     final diff = DateTime.now().difference(time);
-    if (diff.inMinutes < 1)  return 'Только что';
-    if (diff.inMinutes < 60) return '${diff.inMinutes} мин. назад';
-    if (diff.inHours < 24)   return '${diff.inHours} ч. назад';
-    if (diff.inDays == 1)    return 'Вчера';
-    if (diff.inDays < 7)     return '${diff.inDays} дн. назад';
+    if (diff.inMinutes < 1)  return l.justNow;
+    if (diff.inMinutes < 60) return l.minutesAgo(diff.inMinutes);
+    if (diff.inHours < 24)   return l.hoursAgo(diff.inHours);
+    if (diff.inDays == 1)    return l.yesterday;
+    if (diff.inDays < 7)     return l.daysAgo(diff.inDays);
     final d = time.day.toString().padLeft(2, '0');
     final m = time.month.toString().padLeft(2, '0');
     return '$d.$m.${time.year}';
@@ -250,14 +253,14 @@ class _DevicesScreenState extends State<DevicesScreen> {
               children: [
                 IconButton(
                   icon: const Icon(Icons.arrow_back_ios_new, size: 18),
-                  tooltip: 'Назад',
+                  tooltip: context.l10n.back,
                   onPressed: widget.onBack,
                 ),
                 const SizedBox(width: 4),
-                const Expanded(
+                Expanded(
                   child: Text(
-                    'Устройства',
-                    style: TextStyle(
+                    context.l10n.devicesTitle,
+                    style: const TextStyle(
                       fontSize: 17,
                       fontWeight: FontWeight.w600,
                     ),
@@ -265,7 +268,7 @@ class _DevicesScreenState extends State<DevicesScreen> {
                 ),
                 IconButton(
                   icon: const Icon(Icons.refresh, size: 20),
-                  tooltip: 'Обновить',
+                  tooltip: context.l10n.refresh,
                   onPressed: _loading ? null : _load,
                 ),
               ],
@@ -278,11 +281,11 @@ class _DevicesScreenState extends State<DevicesScreen> {
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Устройства'),
+        title: Text(context.l10n.devicesTitle),
         actions: [
           IconButton(
             icon: const Icon(Icons.refresh),
-            tooltip: 'Обновить',
+            tooltip: context.l10n.refresh,
             onPressed: _loading ? null : _load,
           ),
         ],
@@ -306,8 +309,8 @@ class _DevicesScreenState extends State<DevicesScreen> {
               Icon(Icons.error_outline,
                   size: 52, color: Colors.red.withValues(alpha: 0.7)),
               const SizedBox(height: 12),
-              const Text('Не удалось загрузить устройства',
-                  style: TextStyle(fontSize: 16)),
+              Text(context.l10n.failedToLoadDevices,
+                  style: const TextStyle(fontSize: 16)),
               const SizedBox(height: 4),
               Text(_error!,
                   style: const TextStyle(
@@ -317,7 +320,7 @@ class _DevicesScreenState extends State<DevicesScreen> {
               FilledButton.icon(
                 onPressed: _load,
                 icon: const Icon(Icons.refresh),
-                label: const Text('Повторить'),
+                label: Text(context.l10n.retry),
                 style: FilledButton.styleFrom(
                     backgroundColor: Theme.of(context).colorScheme.primary),
               ),
@@ -336,8 +339,8 @@ class _DevicesScreenState extends State<DevicesScreen> {
                 size: 52,
                 color: AppColors.subtle.withValues(alpha: 0.4)),
             const SizedBox(height: 12),
-            const Text('Нет активных устройств',
-                style: TextStyle(color: AppColors.subtle, fontSize: 15)),
+            Text(context.l10n.noActiveDevices,
+                style: const TextStyle(color: AppColors.subtle, fontSize: 15)),
           ],
         ),
       );
@@ -350,7 +353,7 @@ class _DevicesScreenState extends State<DevicesScreen> {
         Padding(
           padding: const EdgeInsets.fromLTRB(16, 16, 16, 6),
           child: Text(
-            'АКТИВНЫЕ СЕАНСЫ (${_devices.length})',
+            context.l10n.activeSessionsCount(_devices.length),
             style: const TextStyle(
               fontSize: 11,
               fontWeight: FontWeight.w700,
@@ -364,7 +367,7 @@ class _DevicesScreenState extends State<DevicesScreen> {
         ..._devices.map((s) => _DeviceSessionTile(
           session: s,
           platformIcon: _platformIcon(s.platform),
-          lastActivityLabel: _formatActivity(s.lastActivity),
+          lastActivityLabel: _formatActivity(context, s.lastActivity),
           onTerminate:
               s.isCurrent ? null : () => _terminateSession(s),
           onLogoutCurrent:
@@ -382,9 +385,9 @@ class _DevicesScreenState extends State<DevicesScreen> {
               child: OutlinedButton.icon(
                 onPressed: _terminateAll,
                 icon: const Icon(Icons.logout, color: Colors.red),
-                label: const Text(
-                  'Выйти со всех устройств',
-                  style: TextStyle(
+                label: Text(
+                  context.l10n.logoutAllDevices,
+                  style: const TextStyle(
                       color: Colors.red, fontWeight: FontWeight.w600),
                 ),
                 style: OutlinedButton.styleFrom(
@@ -395,12 +398,11 @@ class _DevicesScreenState extends State<DevicesScreen> {
               ),
             ),
           ),
-          const Padding(
-            padding: EdgeInsets.fromLTRB(16, 8, 16, 0),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
             child: Text(
-              'Выйдет со всех сеансов, включая текущий.',
-              style:
-                  TextStyle(fontSize: 12, color: AppColors.subtle),
+              context.l10n.logoutAllHint,
+              style: const TextStyle(fontSize: 12, color: AppColors.subtle),
               textAlign: TextAlign.center,
             ),
           ),
@@ -489,7 +491,7 @@ class _DeviceSessionTile extends StatelessWidget {
                         Text(
                           [
                             if (session.platform != null)
-                              _platformLabel(session.platform!),
+                              _platformLabel(session.platform!, context),
                             if (session.location != null)
                               session.location!,
                           ].join(' · '),
@@ -513,7 +515,7 @@ class _DeviceSessionTile extends StatelessWidget {
                       borderRadius: BorderRadius.circular(8),
                     ),
                     child: Text(
-                      'Это\nустройство',
+                      context.l10n.thisDevice,
                       textAlign: TextAlign.center,
                       style: TextStyle(
                         fontSize: 10,
@@ -543,13 +545,13 @@ class _DeviceSessionTile extends StatelessWidget {
                 // Кнопка действия
                 if (onTerminate != null)
                   _ActionChip(
-                    label: 'Завершить',
+                    label: context.l10n.terminate,
                     color: Colors.red,
                     onTap: onTerminate!,
                   )
                 else if (onLogoutCurrent != null)
                   _ActionChip(
-                    label: 'Выйти',
+                    label: context.l10n.logoutBtn,
                     color: AppColors.subtle,
                     onTap: onLogoutCurrent!,
                   ),
@@ -561,10 +563,10 @@ class _DeviceSessionTile extends StatelessWidget {
     );
   }
 
-  String _platformLabel(String platform) => switch (platform.toLowerCase()) {
+  String _platformLabel(String platform, BuildContext context) => switch (platform.toLowerCase()) {
     'ios'     => 'iOS',
     'android' => 'Android',
-    'web'     => 'Браузер',
+    'web'     => context.l10n.browserPlatform,
     'windows' => 'Windows',
     'macos'   => 'macOS',
     'linux'   => 'Linux',

@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:typed_data';
 import 'package:cryptography/cryptography.dart';
 import 'package:http/http.dart' as http;
+import 'api_config.dart';
 
 /// Реализует схему шифрования сообщений «клиент ↔ сервер»:
 ///
@@ -64,7 +65,7 @@ class EncryptionService {
         Uri.parse('$baseUrl$_apiPath'),
         headers: {
           ...authHeaders,
-          'Content-Type': 'application/json',
+          ...ApiConfig.baseHeaders,
         },
         body: jsonEncode({'clientPublicKey': clientB64}),
       ).timeout(const Duration(seconds: 10));

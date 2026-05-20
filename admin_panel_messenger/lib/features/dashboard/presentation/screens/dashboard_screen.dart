@@ -56,7 +56,7 @@ final _dashboardStatsProvider =
   final teachers = people.length - students;
 
   final topSubjects = List<Subject>.from(subjects)
-    ..sort((a, b) => b.assignmentCount.compareTo(a.assignmentCount));
+    ..sort((a, b) => b.groupsPerTeacher.compareTo(a.groupsPerTeacher));
 
   return _DashboardStats(
     people:      people.length,
@@ -657,17 +657,20 @@ class _LegendRow extends StatelessWidget {
   }
 }
 
-/// Топ предметов по количеству назначений
+/// Нагрузка предметов: групп и студентов на одного преподавателя
 class _TopSubjectsCard extends StatelessWidget {
   final List<Subject> subjects;
   const _TopSubjectsCard({required this.subjects});
 
+  static String _fmt(double v) =>
+      v == v.truncateToDouble() ? v.toInt().toString() : v.toStringAsFixed(1);
+
   @override
   Widget build(BuildContext context) {
-    final maxCount = subjects.isEmpty
-        ? 1
-        : subjects.first.assignmentCount.clamp(1, 999);
     final shown = subjects.take(6).toList();
+    final maxRatio = shown.isEmpty
+        ? 1.0
+        : shown.map((s) => s.groupsPerTeacher).reduce((a, b) => a > b ? a : b).clamp(0.01, double.infinity);
 
     return Container(
       padding: const EdgeInsets.all(20),
@@ -683,20 +686,19 @@ class _TopSubjectsCard extends StatelessWidget {
             const Icon(Icons.school_rounded,
                 size: 18, color: Color(0xFF1E3A5F)),
             const SizedBox(width: 8),
-            const Text('Назначения предметов',
+            const Text('Нагрузка предметов',
                 style: TextStyle(
                     fontSize: 14,
                     fontWeight: FontWeight.w600,
                     color: Color(0xFF111827))),
             const Spacer(),
             Text('Топ ${shown.length}',
-                style: TextStyle(
-                    fontSize: 12, color: Colors.grey.shade500)),
+                style:
+                    TextStyle(fontSize: 12, color: Colors.grey.shade500)),
           ]),
           const SizedBox(height: 4),
-          Text('Предметы по количеству назначенных преподавателей',
-              style:
-                  TextStyle(fontSize: 12, color: Colors.grey.shade500)),
+          Text('Групп и студентов на одного преподавателя',
+              style: TextStyle(fontSize: 12, color: Colors.grey.shade500)),
           const SizedBox(height: 16),
           if (subjects.isEmpty)
             Center(
@@ -708,83 +710,150 @@ class _TopSubjectsCard extends StatelessWidget {
             ...shown.asMap().entries.map((e) {
               final idx = e.key;
               final s = e.value;
-              final frac =
-                  s.assignmentCount / maxCount;
+              final frac = maxRatio > 0 ? s.groupsPerTeacher / maxRatio : 0.0;
+              final isTop = idx == 0;
+              final accentColor =
+                  isTop ? const Color(0xFFD97706) : const Color(0xFF1E3A5F);
+
               return Padding(
                 padding: EdgeInsets.only(
-                    bottom: idx < shown.length - 1 ? 10 : 0),
-                child: Row(children: [
-                  // Rank badge
-                  Container(
-                    width: 22,
-                    height: 22,
-                    decoration: BoxDecoration(
-                      color: idx == 0
-                          ? const Color(0xFFFFFBEB)
-                          : Colors.grey.shade100,
-                      shape: BoxShape.circle,
+                    bottom: idx < shown.length - 1 ? 12 : 0),
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.center,
+                  children: [
+                    // Rank badge
+                    Container(
+                      width: 22,
+                      height: 22,
+                      decoration: BoxDecoration(
+                        color: isTop
+                            ? const Color(0xFFFFFBEB)
+                            : Colors.grey.shade100,
+                        shape: BoxShape.circle,
+                      ),
+                      child: Center(
+                        child: Text('${idx + 1}',
+                            style: TextStyle(
+                                fontSize: 11,
+                                fontWeight: FontWeight.w700,
+                                color: isTop
+                                    ? const Color(0xFFD97706)
+                                    : Colors.grey.shade500)),
+                      ),
                     ),
-                    child: Center(
-                      child: Text('${idx + 1}',
-                          style: TextStyle(
-                              fontSize: 11,
-                              fontWeight: FontWeight.w700,
-                              color: idx == 0
-                                  ? const Color(0xFFD97706)
-                                  : Colors.grey.shade500)),
-                    ),
-                  ),
-                  const SizedBox(width: 8),
-                  // Name + bar
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(s.name,
-                            style: const TextStyle(
-                                fontSize: 13,
-                                fontWeight: FontWeight.w500,
-                                color: Color(0xFF111827))),
-                        const SizedBox(height: 4),
-                        ClipRRect(
-                          borderRadius: BorderRadius.circular(4),
-                          child: LinearProgressIndicator(
-                            value: frac,
-                            minHeight: 6,
-                            backgroundColor: Colors.grey.shade100,
-                            valueColor:
-                                AlwaysStoppedAnimation<Color>(
-                              idx == 0
-                                  ? const Color(0xFFD97706)
-                                  : const Color(0xFF1E3A5F)
-                                      .withValues(alpha: 0.5),
+                    const SizedBox(width: 8),
+                    // Name + bar + sub-stats
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(s.name,
+                              style: const TextStyle(
+                                  fontSize: 13,
+                                  fontWeight: FontWeight.w500,
+                                  color: Color(0xFF111827))),
+                          const SizedBox(height: 3),
+                          ClipRRect(
+                            borderRadius: BorderRadius.circular(4),
+                            child: LinearProgressIndicator(
+                              value: frac.clamp(0.0, 1.0),
+                              minHeight: 5,
+                              backgroundColor: Colors.grey.shade100,
+                              valueColor: AlwaysStoppedAnimation<Color>(
+                                accentColor.withValues(alpha: isTop ? 1.0 : 0.5),
+                              ),
                             ),
                           ),
+                          const SizedBox(height: 3),
+                          // Sub-stats row: teachers / groups / students
+                          Row(children: [
+                            _SubStat(
+                              icon: Icons.person_outline_rounded,
+                              value: '${s.teacherCount}',
+                              label: 'препод.',
+                              color: Colors.grey.shade500,
+                            ),
+                            const SizedBox(width: 10),
+                            _SubStat(
+                              icon: Icons.groups_outlined,
+                              value: '${s.groupCount}',
+                              label: 'групп',
+                              color: Colors.grey.shade500,
+                            ),
+                            const SizedBox(width: 10),
+                            _SubStat(
+                              icon: Icons.people_outline_rounded,
+                              value: '${s.studentCount}',
+                              label: 'студ.',
+                              color: Colors.grey.shade500,
+                            ),
+                          ]),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    // Load ratio
+                    Column(
+                      crossAxisAlignment: CrossAxisAlignment.end,
+                      children: [
+                        Text(
+                          _fmt(s.groupsPerTeacher),
+                          style: TextStyle(
+                              fontSize: 17,
+                              fontWeight: FontWeight.w800,
+                              color: accentColor,
+                              height: 1),
+                        ),
+                        Text(
+                          'гр./препод.',
+                          style: TextStyle(
+                              fontSize: 9, color: Colors.grey.shade400),
+                        ),
+                        const SizedBox(height: 2),
+                        Text(
+                          _fmt(s.studentsPerTeacher),
+                          style: TextStyle(
+                              fontSize: 12,
+                              fontWeight: FontWeight.w600,
+                              color: accentColor.withValues(alpha: 0.7),
+                              height: 1),
+                        ),
+                        Text(
+                          'студ./препод.',
+                          style: TextStyle(
+                              fontSize: 9, color: Colors.grey.shade400),
                         ),
                       ],
                     ),
-                  ),
-                  const SizedBox(width: 10),
-                  // Count
-                  SizedBox(
-                    width: 32,
-                    child: Text(
-                      '${s.assignmentCount}',
-                      textAlign: TextAlign.right,
-                      style: TextStyle(
-                          fontSize: 13,
-                          fontWeight: FontWeight.w700,
-                          color: idx == 0
-                              ? const Color(0xFFD97706)
-                              : Colors.grey.shade600),
-                    ),
-                  ),
-                ]),
+                  ],
+                ),
               );
             }),
         ],
       ),
     );
+  }
+}
+
+class _SubStat extends StatelessWidget {
+  final IconData icon;
+  final String value;
+  final String label;
+  final Color color;
+  const _SubStat(
+      {required this.icon,
+      required this.value,
+      required this.label,
+      required this.color});
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(mainAxisSize: MainAxisSize.min, children: [
+      Icon(icon, size: 10, color: color),
+      const SizedBox(width: 2),
+      Text('$value $label',
+          style: TextStyle(fontSize: 10, color: color)),
+    ]);
   }
 }
 
@@ -876,14 +945,16 @@ class _ActivityCard extends StatelessWidget {
   final List<ActivityPoint> points;
   const _ActivityCard({required this.points});
 
+  static const _barH = 72.0;
+
   @override
   Widget build(BuildContext context) {
-    final maxVal = points.isEmpty
+    final shown =
+        points.length > 14 ? points.sublist(points.length - 14) : points;
+    final maxVal = shown.isEmpty
         ? 1
-        : points.map((p) => p.logins).reduce((a, b) => a > b ? a : b).clamp(1, 99999);
-    final total = points.fold(0, (s, p) => s + p.logins);
-    // Show only last 14 labels but abbreviated
-    final shown = points.length > 14 ? points.sublist(points.length - 14) : points;
+        : shown.map((p) => p.logins).reduce((a, b) => a > b ? a : b).clamp(1, 99999);
+    final total = shown.fold(0, (s, p) => s + p.logins);
 
     return _StatsCard(
       icon: Icons.bar_chart_rounded,
@@ -892,49 +963,98 @@ class _ActivityCard extends StatelessWidget {
       trailing: '$total входов',
       child: shown.isEmpty
           ? _emptyHint('Нет данных за период')
-          : SizedBox(
-              height: 80,
-              child: Row(
-                crossAxisAlignment: CrossAxisAlignment.end,
-                children: shown.map((p) {
-                  final frac = maxVal > 0 ? p.logins / maxVal : 0.0;
-                  final isMax = p.logins == maxVal && p.logins > 0;
-                  return Expanded(
-                    child: Padding(
-                      padding: const EdgeInsets.symmetric(horizontal: 1.5),
-                      child: Tooltip(
-                        message: '${p.date}\n${p.logins} входов',
-                        child: Column(
-                          mainAxisAlignment: MainAxisAlignment.end,
-                          children: [
-                            if (p.logins > 0)
-                              Text('${p.logins}',
-                                  style: TextStyle(
-                                      fontSize: 8,
-                                      color: isMax
-                                          ? const Color(0xFF2563EB)
-                                          : Colors.grey.shade400)),
-                            const SizedBox(height: 2),
-                            ClipRRect(
-                              borderRadius: const BorderRadius.vertical(
-                                  top: Radius.circular(3)),
-                              child: Container(
-                                height: (frac * 60).clamp(2.0, 60.0),
-                                color: isMax
-                                    ? const Color(0xFF2563EB)
-                                    : const Color(0xFF2563EB)
-                                        .withValues(alpha: 0.3),
-                              ),
+          : Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                // ── Bars ───────────────────────────────────────────────
+                SizedBox(
+                  height: _barH + 14, // extra room for peak label
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.end,
+                    children: shown.map((p) {
+                      final frac = maxVal > 0 ? p.logins / maxVal : 0.0;
+                      final isMax = p.logins == maxVal && p.logins > 0;
+                      return Expanded(
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(horizontal: 2),
+                          child: Tooltip(
+                            message: '${_fmtDate(p.date)}: ${p.logins} входов',
+                            child: Column(
+                              mainAxisAlignment: MainAxisAlignment.end,
+                              children: [
+                                // Peak label (only for max bar)
+                                SizedBox(
+                                  height: 14,
+                                  child: isMax
+                                      ? Text(
+                                          '${p.logins}',
+                                          textAlign: TextAlign.center,
+                                          style: const TextStyle(
+                                            fontSize: 9,
+                                            fontWeight: FontWeight.w800,
+                                            color: Color(0xFF2563EB),
+                                          ),
+                                        )
+                                      : null,
+                                ),
+                                // Bar
+                                ClipRRect(
+                                  borderRadius: const BorderRadius.vertical(
+                                      top: Radius.circular(4)),
+                                  child: Container(
+                                    height: (frac * _barH).clamp(2.0, _barH),
+                                    color: isMax
+                                        ? const Color(0xFF2563EB)
+                                        : const Color(0xFF93C5FD),
+                                  ),
+                                ),
+                              ],
                             ),
-                          ],
+                          ),
+                        ),
+                      );
+                    }).toList(),
+                  ),
+                ),
+                // ── Baseline ───────────────────────────────────────────
+                Container(height: 1, color: Colors.grey.shade200),
+                const SizedBox(height: 5),
+                // ── Date axis ──────────────────────────────────────────
+                Row(
+                  children: shown.asMap().entries.map((e) {
+                    final idx = e.key;
+                    final n = shown.length;
+                    // Show: 1st, last, and every 3rd in between
+                    final show =
+                        idx == 0 || idx == n - 1 || (idx % 3 == 0);
+                    return Expanded(
+                      child: Text(
+                        show ? _dayNum(e.value.date) : '',
+                        textAlign: TextAlign.center,
+                        style: TextStyle(
+                          fontSize: 8.5,
+                          color: Colors.grey.shade400,
                         ),
                       ),
-                    ),
-                  );
-                }).toList(),
-              ),
+                    );
+                  }).toList(),
+                ),
+              ],
             ),
     );
+  }
+
+  static String _fmtDate(String date) {
+    try {
+      final p = date.split('-');
+      const m = ['','янв','фев','мар','апр','май','июн','июл','авг','сен','окт','ноя','дек'];
+      return '${int.parse(p[2])} ${m[int.parse(p[1])]}';
+    } catch (_) { return date; }
+  }
+
+  static String _dayNum(String date) {
+    try { return '${int.parse(date.split('-')[2])}'; }
+    catch (_) { return ''; }
   }
 }
 
@@ -1015,145 +1135,189 @@ class _GrowthCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final totalNew = points.fold(0, (s, p) => s + p.newCount);
-    final currentTotal = points.isEmpty ? 0 : points.last.total;
-    final startTotal = points.isEmpty ? 0 : points.first.total - points.first.newCount;
-    final maxVal = points.isEmpty
-        ? 1
-        : points.map((p) => p.total).reduce((a, b) => a > b ? a : b).clamp(1, 99999);
-    // Show weekly buckets (every 7th point label)
-    final shown = points.length > 30 ? points.sublist(points.length - 30) : points;
+    final shown =
+        points.length > 30 ? points.sublist(points.length - 30) : points;
+
+    final startPeople =
+        shown.isEmpty ? 0 : shown.first.total - shown.first.newCount;
+    final endPeople = shown.isEmpty ? 0 : shown.last.total;
+    final startReg =
+        shown.isEmpty ? 0 : shown.first.totalRegistered - shown.first.newRegistered;
+    final endReg = shown.isEmpty ? 0 : shown.last.totalRegistered;
+
+    // Common max across both series for a fair scale
+    final maxVal = shown.isEmpty
+        ? 1.0
+        : shown
+            .expand((p) => [p.total.toDouble(), p.totalRegistered.toDouble()])
+            .reduce((a, b) => a > b ? a : b)
+            .clamp(1.0, double.infinity)
+            .toDouble();
 
     return _StatsCard(
       icon: Icons.group_add_rounded,
-      title: 'Новые участники',
+      title: 'Участники и аккаунты',
       subtitle: 'Прирост за 30 дней',
-      trailing: '+$totalNew за период',
+      trailing: '+$totalNew участников',
       child: shown.isEmpty
           ? _emptyHint('Нет данных за период')
           : Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                // Area-like chart via gradient bars
                 SizedBox(
-                  height: 60,
+                  height: 68,
                   child: CustomPaint(
-                    painter: _LineChartPainter(
-                      values: shown.map((p) => p.total.toDouble()).toList(),
-                      maxVal: maxVal.toDouble(),
-                      color: const Color(0xFF059669),
+                    painter: _DualLineChartPainter(
+                      values1: shown.map((p) => p.total.toDouble()).toList(),
+                      values2: shown
+                          .map((p) => p.totalRegistered.toDouble())
+                          .toList(),
+                      maxVal: maxVal,
+                      color1: const Color(0xFF059669),
+                      color2: const Color(0xFF2563EB),
                     ),
-                    size: const Size(double.infinity, 60),
+                    size: const Size(double.infinity, 68),
                   ),
                 ),
-                const SizedBox(height: 8),
-                Row(
-                  children: [
-                    _GrowthStat(
-                      label: 'Было',
-                      value: '$startTotal',
-                      color: Colors.grey.shade500,
-                    ),
-                    const SizedBox(width: 12),
-                    _GrowthStat(
-                      label: 'Стало',
-                      value: '$currentTotal',
-                      color: const Color(0xFF059669),
-                    ),
-                  ],
-                ),
+                const SizedBox(height: 10),
+                Row(children: [
+                  _GrowthLegend(
+                    color: const Color(0xFF059669),
+                    label: 'Участники',
+                    from: startPeople,
+                    to: endPeople,
+                  ),
+                  const SizedBox(width: 16),
+                  _GrowthLegend(
+                    color: const Color(0xFF2563EB),
+                    label: 'Аккаунты',
+                    from: startReg,
+                    to: endReg,
+                  ),
+                ]),
               ],
             ),
     );
   }
 }
 
-class _GrowthStat extends StatelessWidget {
-  final String label;
-  final String value;
+class _GrowthLegend extends StatelessWidget {
   final Color color;
-  const _GrowthStat(
-      {required this.label, required this.value, required this.color});
+  final String label;
+  final int from;
+  final int to;
+  const _GrowthLegend(
+      {required this.color,
+      required this.label,
+      required this.from,
+      required this.to});
 
   @override
   Widget build(BuildContext context) {
     return Row(mainAxisSize: MainAxisSize.min, children: [
-      Text('$label: ',
-          style: TextStyle(fontSize: 11, color: Colors.grey.shade500)),
-      Text(value,
+      Container(
+        width: 12,
+        height: 2,
+        decoration: BoxDecoration(
+          color: color,
+          borderRadius: BorderRadius.circular(1),
+        ),
+      ),
+      const SizedBox(width: 5),
+      Text(label,
+          style: TextStyle(fontSize: 10, color: Colors.grey.shade500)),
+      const SizedBox(width: 5),
+      Text('$from',
+          style: TextStyle(fontSize: 10, color: Colors.grey.shade500)),
+      Text(' → ',
+          style: TextStyle(fontSize: 10, color: Colors.grey.shade400)),
+      Text('$to',
           style: TextStyle(
-              fontSize: 12, fontWeight: FontWeight.w700, color: color)),
+              fontSize: 11, fontWeight: FontWeight.w700, color: color)),
     ]);
   }
 }
 
-// ── Line chart painter ────────────────────────────────────────────────────────
+// ── Dual line chart painter ───────────────────────────────────────────────────
 
-class _LineChartPainter extends CustomPainter {
-  final List<double> values;
+class _DualLineChartPainter extends CustomPainter {
+  final List<double> values1;
+  final List<double> values2;
   final double maxVal;
-  final Color color;
+  final Color color1;
+  final Color color2;
 
-  const _LineChartPainter({
-    required this.values,
+  const _DualLineChartPainter({
+    required this.values1,
+    required this.values2,
     required this.maxVal,
-    required this.color,
+    required this.color1,
+    required this.color2,
   });
 
   @override
   void paint(Canvas canvas, Size size) {
-    if (values.length < 2) return;
+    _draw(canvas, size, values1, color1, fill: true);
+    _draw(canvas, size, values2, color2, fill: false);
+  }
 
+  void _draw(Canvas canvas, Size size, List<double> vals, Color color,
+      {required bool fill}) {
+    if (vals.length < 2) return;
     final w = size.width;
     final h = size.height;
-    final step = w / (values.length - 1);
+    final step = w / (vals.length - 1);
 
-    final path = Path();
-    final fillPath = Path();
+    final line = Path();
+    final area = fill ? Path() : null;
 
-    for (var i = 0; i < values.length; i++) {
+    for (var i = 0; i < vals.length; i++) {
       final x = i * step;
-      final y = h - (values[i] / maxVal * h * 0.85) - 2;
+      final y = h - (vals[i] / maxVal * h * 0.88) - 1;
       if (i == 0) {
-        path.moveTo(x, y);
-        fillPath.moveTo(x, h);
-        fillPath.lineTo(x, y);
+        line.moveTo(x, y);
+        area?.moveTo(x, h);
+        area?.lineTo(x, y);
       } else {
-        path.lineTo(x, y);
-        fillPath.lineTo(x, y);
+        line.lineTo(x, y);
+        area?.lineTo(x, y);
       }
     }
-    fillPath.lineTo((values.length - 1) * step, h);
-    fillPath.close();
+    area?.lineTo((vals.length - 1) * step, h);
+    area?.close();
 
-    // Fill
-    canvas.drawPath(
-      fillPath,
-      Paint()
-        ..shader = LinearGradient(
-          begin: Alignment.topCenter,
-          end: Alignment.bottomCenter,
-          colors: [
-            color.withValues(alpha: 0.2),
-            color.withValues(alpha: 0.02),
-          ],
-        ).createShader(Rect.fromLTWH(0, 0, w, h))
-        ..style = PaintingStyle.fill,
-    );
+    if (area != null) {
+      canvas.drawPath(
+        area,
+        Paint()
+          ..shader = LinearGradient(
+            begin: Alignment.topCenter,
+            end: Alignment.bottomCenter,
+            colors: [
+              color.withValues(alpha: 0.15),
+              color.withValues(alpha: 0.01),
+            ],
+          ).createShader(Rect.fromLTWH(0, 0, w, h))
+          ..style = PaintingStyle.fill,
+      );
+    }
 
-    // Line
     canvas.drawPath(
-      path,
+      line,
       Paint()
         ..color = color
-        ..strokeWidth = 2
+        ..strokeWidth = 1.8
         ..style = PaintingStyle.stroke
-        ..strokeJoin = StrokeJoin.round,
+        ..strokeJoin = StrokeJoin.round
+        ..strokeCap = StrokeCap.round,
     );
   }
 
   @override
-  bool shouldRepaint(_LineChartPainter old) =>
-      old.values != values || old.maxVal != maxVal;
+  bool shouldRepaint(_DualLineChartPainter old) =>
+      old.values1 != values1 ||
+      old.values2 != values2 ||
+      old.maxVal != maxVal;
 }
 
 // ── Shared card container ─────────────────────────────────────────────────────

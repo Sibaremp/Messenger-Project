@@ -11,18 +11,28 @@ class ApiConfig {
   /// Порт сервера.
   static const int port = 5216;
 
+  /// Туннель (ngrok, Cloudflare Tunnel и т.д.). Если задан — используется вместо локального хоста.
+  /// Формат: только хост без схемы и порта, например:
+  ///   `abc123.trycloudflare.com`
+  static const String? tunnelHost = 'vanilla-bands-eco-mix.trycloudflare.com';
+
   /// Переопределение хоста (например, `192.168.1.10` для реального устройства
   /// или прод-домен). Если не установлено, используется автоопределение.
   static String? overrideHost;
 
+  static bool get _useNgrok => tunnelHost != null && tunnelHost!.isNotEmpty;
+
   static String get _host {
+    if (_useNgrok) return tunnelHost!;
     if (overrideHost != null && overrideHost!.isNotEmpty) return overrideHost!;
     if (!kIsWeb && Platform.isAndroid) return '10.0.2.2';
     return 'localhost';
   }
 
   /// Корень сервера (без /api). Используется для резолвинга путей вида `/uploads/...`.
-  static String get origin => 'http://$_host:$port';
+  /// ngrok всегда HTTPS и не требует порта.
+  static String get origin =>
+      _useNgrok ? 'https://$_host' : 'http://$_host:$port';
 
   /// Базовый URL REST API (без завершающего слеша).
   static String get baseUrl => '$origin/api';
@@ -48,11 +58,12 @@ class ApiConfig {
     if (path == null || path.isEmpty) return null;
     if (path.startsWith('http://') || path.startsWith('https://')) {
       // Сервер иногда возвращает абсолютные URL с localhost/127.0.0.1.
-      // На реальном устройстве это адрес самого телефона, а не сервера —
-      // заменяем хост на тот, который используется для API-запросов.
-      return path
-          .replaceFirst(RegExp(r'://localhost(?=[:/?#])'), '://$_host')
-          .replaceFirst(RegExp(r'://127\.0\.0\.1(?=[:/?#])'), '://$_host');
+      // Заменяем всю origin-часть (схема + хост + порт) на текущий origin,
+      // чтобы корректно работало и с ngrok (https, без порта), и локально.
+      return path.replaceFirstMapped(
+        RegExp(r'https?://(?:localhost|127\.0\.0\.1)(?::\d+)?'),
+        (_) => origin,
+      );
     }
     if (isServerMediaPath(path)) return '$origin$path';
     return path;
@@ -73,6 +84,11 @@ class ApiConfig {
         path.startsWith('/media/') ||
         path.startsWith('/thumbnails/');
   }
+
+  /// Базовые HTTP-заголовки (без авторизации).
+  static Map<String, String> get baseHeaders => {
+    'Content-Type': 'application/json',
+  };
 
   /// Таймаут HTTP-запросов.
   static const Duration httpTimeout = Duration(seconds: 30);

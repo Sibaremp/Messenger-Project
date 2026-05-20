@@ -157,7 +157,7 @@ class AuthService {
 
   /// HTTP-заголовки с авторизацией.
   Map<String, String> get authHeaders => {
-    'Content-Type': 'application/json',
+    ...ApiConfig.baseHeaders,
     if (token != null) 'Authorization': 'Bearer $token',
   };
 
@@ -209,7 +209,7 @@ class AuthService {
   }) async {
     final response = await http.post(
       Uri.parse('${ApiConfig.baseUrl}/auth/register'),
-      headers: {'Content-Type': 'application/json'},
+      headers: ApiConfig.baseHeaders,
       body: jsonEncode({
         'personId': personId,
         'name': name,
@@ -249,7 +249,7 @@ class AuthService {
   }) async {
     final response = await http.post(
       Uri.parse('${ApiConfig.baseUrl}/auth/login'),
-      headers: {'Content-Type': 'application/json'},
+      headers: ApiConfig.baseHeaders,
       body: jsonEncode({
         'name': name,
         'password': password,
@@ -331,7 +331,7 @@ class AuthService {
   Future<List<String>> loadGroups() async {
     final response = await http.get(
       Uri.parse('${ApiConfig.baseUrl}/auth/groups'),
-      headers: {'Content-Type': 'application/json'},
+      headers: ApiConfig.baseHeaders,
     ).timeout(ApiConfig.httpTimeout);
 
     if (response.statusCode != 200) return [];
@@ -352,7 +352,7 @@ class AuthService {
     );
     final response = await http.get(
       uri,
-      headers: {'Content-Type': 'application/json'},
+      headers: ApiConfig.baseHeaders,
     ).timeout(ApiConfig.httpTimeout);
 
     if (response.statusCode != 200) return [];
@@ -372,7 +372,7 @@ class AuthService {
       'POST',
       Uri.parse('${ApiConfig.baseUrl}/users/me/avatar'),
     );
-    // Только Authorization — Content-Type multipart/form-data добавит сам MultipartRequest
+    // Authorization; Content-Type multipart/form-data добавит сам MultipartRequest
     request.headers['Authorization'] = 'Bearer $token';
     request.files.add(await http.MultipartFile.fromPath('file', filePath));
     final streamed = await request.send().timeout(const Duration(minutes: 2));

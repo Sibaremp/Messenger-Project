@@ -39,11 +39,23 @@ class GrowthPoint {
   final String date;
   final int newCount;
   final int total;
-  GrowthPoint({required this.date, required this.newCount, required this.total});
+  final int newRegistered;
+  final int totalRegistered;
+
+  GrowthPoint({
+    required this.date,
+    required this.newCount,
+    required this.total,
+    required this.newRegistered,
+    required this.totalRegistered,
+  });
+
   factory GrowthPoint.fromJson(Map<String, dynamic> j) => GrowthPoint(
-        date: j['date'] as String,
-        newCount: j['newCount'] as int,
-        total: j['total'] as int,
+        date:            j['date'] as String,
+        newCount:        j['newCount'] as int,
+        total:           j['total'] as int,
+        newRegistered:   j['newRegistered'] as int? ?? 0,
+        totalRegistered: j['totalRegistered'] as int? ?? 0,
       );
 }
 

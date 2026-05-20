@@ -2,6 +2,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:emoji_picker_flutter/emoji_picker_flutter.dart';
 import 'package:cached_network_image/cached_network_image.dart' hide DownloadProgress;
+import '../l10n/app_localizations.dart';
 import '../services/tenor_service.dart';
 
 /// Панель выбора эмодзи / GIF (появляется над полем ввода).
@@ -103,9 +104,9 @@ class _EmojiGifPanelState extends State<EmojiGifPanel>
               labelStyle: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
               unselectedLabelStyle: const TextStyle(fontSize: 13),
               tabAlignment: TabAlignment.center,
-              tabs: const [
-                Tab(text: 'Эмодзи', height: 36),
-                Tab(text: 'GIF',    height: 36),
+              tabs: [
+                Tab(text: context.l10n.emojiTab, height: 36),
+                const Tab(text: 'GIF',    height: 36),
               ],
             ),
             const Divider(height: 1),
@@ -195,7 +196,7 @@ class _EmojiGifPanelState extends State<EmojiGifPanel>
               onChanged: _onSearchChanged,
               style: const TextStyle(fontSize: 13),
               decoration: InputDecoration(
-                hintText: 'Поиск GIF…',
+                hintText: context.l10n.searchGif,
                 hintStyle: const TextStyle(fontSize: 13),
                 prefixIcon: const Icon(Icons.search, size: 16),
                 prefixIconConstraints: const BoxConstraints(minWidth: 32, minHeight: 32),
@@ -222,7 +223,7 @@ class _EmojiGifPanelState extends State<EmojiGifPanel>
                         children: [
                           Icon(Icons.gif_box_outlined, size: 36, color: theme.hintColor),
                           const SizedBox(height: 6),
-                          Text('Введите запрос для поиска GIF',
+                          Text(context.l10n.gifSearchHint,
                               style: TextStyle(fontSize: 12, color: theme.hintColor)),
                         ],
                       ),

@@ -13,8 +13,11 @@ import '../services/chat_service.dart' show ChatService;
 import '../services/api_config.dart' show ApiConfig;
 import '../services/notification_settings.dart';
 import '../services/sim_service.dart';
+import '../services/file_download_service.dart' show FileDownloadService;
+import '../services/media_save_service.dart';
 import '../screens/devices_screen.dart';
 import '../utils/app_snack.dart';
+import '../l10n/app_localizations.dart';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Public entry point
@@ -215,7 +218,7 @@ class _PageHeader extends StatelessWidget {
             IconButton(
               icon: const Icon(Icons.arrow_back, size: 20),
               onPressed: onBack,
-              tooltip: 'Назад',
+              tooltip: context.l10n.back,
             ),
           const SizedBox(width: 4),
           Expanded(
@@ -228,7 +231,7 @@ class _PageHeader extends StatelessWidget {
             IconButton(
               icon: const Icon(Icons.close, size: 20),
               onPressed: onClose,
-              tooltip: 'Закрыть',
+              tooltip: context.l10n.close,
             ),
         ],
       ),
@@ -373,7 +376,7 @@ class _MainPage extends StatelessWidget {
     return Column(
       mainAxisSize: MainAxisSize.min,
       children: [
-        _PageHeader(title: 'Настройки', onClose: onClose),
+        _PageHeader(title: context.l10n.settingsTitle, onClose: onClose),
         Flexible(
           child: SingleChildScrollView(
             child: Column(
@@ -411,7 +414,7 @@ class _MainPage extends StatelessWidget {
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
                               Text(
-                                user?.displayName ?? user?.name ?? 'Профиль',
+                                user?.displayName ?? user?.name ?? context.l10n.profile,
                                 style: const TextStyle(
                                   fontSize: 16,
                                   fontWeight: FontWeight.w600,
@@ -442,7 +445,7 @@ class _MainPage extends StatelessWidget {
                 ),
 
                 // ── Scale slider ──────────────────────────────────────────
-                const _SectionLabel('Масштаб'),
+                _SectionLabel(context.l10n.textScaleLabel),
                 Padding(
                   padding: const EdgeInsets.symmetric(horizontal: 16),
                   child: Row(
@@ -476,42 +479,42 @@ class _MainPage extends StatelessWidget {
                 const Divider(height: 1),
                 _SettingsItem(
                   icon: Icons.notifications_outlined,
-                  title: 'Уведомления и звуки',
+                  title: context.l10n.notifAndSounds,
                   iconColor: const Color(0xFFE91E63),
                   onTap: () => onPush(_Page.notifications),
                 ),
                 _SettingsItem(
                   icon: Icons.devices_outlined,
-                  title: 'Активные сеансы',
-                  subtitle: 'Устройства с активной сессией',
+                  title: context.l10n.activeSessions,
+                  subtitle: context.l10n.activeSessionsSub,
                   iconColor: const Color(0xFF2196F3),
                   onTap: () => onPush(_Page.sessions),
                 ),
                 _SettingsItem(
                   icon: Icons.palette_outlined,
-                  title: 'Оформление',
-                  subtitle: 'Тема, цвета, шрифт',
+                  title: context.l10n.appearance,
+                  subtitle: context.l10n.appearanceSub,
                   iconColor: const Color(0xFF9C27B0),
                   onTap: () => onPush(_Page.theme),
                 ),
                 _SettingsItem(
                   icon: Icons.storage_outlined,
-                  title: 'Данные и хранилище',
-                  subtitle: 'Кэш, медиафайлы',
+                  title: context.l10n.dataAndStorage,
+                  subtitle: context.l10n.dataAndStorageSub,
                   iconColor: const Color(0xFF4CAF50),
                   onTap: () => onPush(_Page.storage),
                 ),
                 _SettingsItem(
                   icon: Icons.mic_outlined,
-                  title: 'Звук и камера',
-                  subtitle: 'Микрофон, динамик, камера',
+                  title: context.l10n.soundAndCamera,
+                  subtitle: context.l10n.soundAndCameraSub,
                   iconColor: const Color(0xFFFF9800),
                   onTap: () => onPush(_Page.audioVideo),
                 ),
                 _SettingsItem(
                   icon: Icons.language_outlined,
-                  title: 'Язык',
-                  subtitle: 'Русский',
+                  title: context.l10n.languageTitle,
+                  subtitle: context.l10n.languageSub,
                   iconColor: const Color(0xFF00BCD4),
                   onTap: () => onPush(_Page.language),
                 ),
@@ -519,7 +522,7 @@ class _MainPage extends StatelessWidget {
                 const Divider(height: 1),
                 _SettingsItem(
                   icon: Icons.logout,
-                  title: 'Выйти из аккаунта',
+                  title: context.l10n.logoutTitle,
                   iconColor: Colors.red,
                   onTap: () {
                     Navigator.of(context).pop();
@@ -590,22 +593,22 @@ class _ProfilePageState extends State<_ProfilePage> {
       switch (result.status) {
         case SimResult.success:
           if (result.simCards.isEmpty) {
-            AppSnack.error(context, 'SIM-карта не найдена');
+            AppSnack.error(context, context.l10n.simCardNotFound);
           } else if (result.simCards.length == 1) {
             _applySimCard(result.simCards.first);
           } else {
             _showSimPicker(result.simCards);
           }
         case SimResult.permissionDenied:
-          AppSnack.error(context, 'Нет разрешения на чтение SIM-карты');
+          AppSnack.error(context, context.l10n.simPermissionDenied);
         case SimResult.permissionPermanentlyDenied:
           _showPermissionDialog();
         case SimResult.unsupported:
-          AppSnack.error(context, 'Устройство не поддерживает чтение SIM');
+          AppSnack.error(context, context.l10n.simUnsupported);
         case SimResult.noSimFound:
-          AppSnack.error(context, 'SIM-карта не найдена');
+          AppSnack.error(context, context.l10n.simCardNotFound);
         case SimResult.error:
-          AppSnack.error(context, result.errorMessage ?? 'Ошибка чтения SIM');
+          AppSnack.error(context, result.errorMessage ?? context.l10n.simReadError);
       }
     } finally {
       if (mounted) setState(() => _simLoading = false);
@@ -618,8 +621,7 @@ class _ProfilePageState extends State<_ProfilePage> {
       setState(() => _phoneCtrl.text = number);
     } else {
       // На iOS номер не предоставляется — показываем оператора
-      AppSnack.error(context,
-          'Номер недоступен (${card.displayInfo}). На iOS Apple скрывает номер.');
+      AppSnack.error(context, context.l10n.simNumberUnavailable(card.displayInfo));
     }
   }
 
@@ -630,10 +632,10 @@ class _ProfilePageState extends State<_ProfilePage> {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            const Padding(
-              padding: EdgeInsets.symmetric(vertical: 12),
-              child: Text('Выберите SIM-карту',
-                  style: TextStyle(fontWeight: FontWeight.w600, fontSize: 16)),
+            Padding(
+              padding: const EdgeInsets.symmetric(vertical: 12),
+              child: Text(context.l10n.selectSim,
+                  style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 16)),
             ),
             const Divider(height: 1),
             ...cards.map((card) => ListTile(
@@ -658,18 +660,16 @@ class _ProfilePageState extends State<_ProfilePage> {
     showDialog<void>(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Text('Разрешение заблокировано'),
-        content: const Text(
-            'Разрешение на чтение SIM-карты было отклонено. '
-            'Откройте настройки приложения, чтобы включить его.'),
+        title: Text(context.l10n.permissionBlocked),
+        content: Text(context.l10n.simPermissionBlockedDesc),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Отмена')),
+          TextButton(onPressed: () => Navigator.pop(ctx), child: Text(context.l10n.cancel)),
           FilledButton(
             onPressed: () {
               Navigator.pop(ctx);
               SimService.openSettings();
             },
-            child: const Text('Настройки'),
+            child: Text(context.l10n.openSettingsBtn),
           ),
         ],
       ),
@@ -702,12 +702,12 @@ class _ProfilePageState extends State<_ProfilePage> {
       widget.onAvatarChanged?.call();
       if (mounted) {
         setState(() => _saving = false);
-                AppSnack.success(context, 'Сохранено');
+        AppSnack.success(context, context.l10n.savedMsg);
       }
     } catch (e) {
       if (mounted) {
         setState(() => _saving = false);
-                AppSnack.error(context, 'Ошибка: $e');
+        AppSnack.error(context, context.l10n.profileSaveError(e.toString()));
       }
     }
   }
@@ -720,20 +720,20 @@ class _ProfilePageState extends State<_ProfilePage> {
       context: context,
       builder: (ctx) => StatefulBuilder(
         builder: (ctx, ss) => AlertDialog(
-          title: const Text('Сменить логин'),
+          title: Text(context.l10n.changeLogin),
           content: Column(mainAxisSize: MainAxisSize.min, children: [
             TextField(
               controller: loginCtrl,
               autofocus: true,
               maxLength: 32,
-              decoration: const InputDecoration(labelText: 'Новый логин'),
+              decoration: InputDecoration(labelText: context.l10n.newLoginLabel),
             ),
             const SizedBox(height: 8),
             TextField(
               controller: passCtrl,
               obscureText: obscure,
               decoration: InputDecoration(
-                labelText: 'Текущий пароль',
+                labelText: context.l10n.currentPassword,
                 suffixIcon: IconButton(
                   icon: Icon(obscure ? Icons.visibility_off : Icons.visibility),
                   onPressed: () => ss(() => obscure = !obscure),
@@ -742,8 +742,8 @@ class _ProfilePageState extends State<_ProfilePage> {
             ),
           ]),
           actions: [
-            TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Отмена')),
-            FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Сохранить')),
+            TextButton(onPressed: () => Navigator.pop(ctx, false), child: Text(context.l10n.cancel)),
+            FilledButton(onPressed: () => Navigator.pop(ctx, true), child: Text(context.l10n.save)),
           ],
         ),
       ),
@@ -753,7 +753,7 @@ class _ProfilePageState extends State<_ProfilePage> {
       await widget.auth.changeLogin(loginCtrl.text.trim(), passCtrl.text);
       if (mounted) setState(() {});
       if (mounted) {
-                AppSnack.success(context, 'Логин изменён');
+        AppSnack.success(context, context.l10n.loginChanged);
       }
     } on svc.AuthException catch (e) {
       if (mounted) {
@@ -772,7 +772,7 @@ class _ProfilePageState extends State<_ProfilePage> {
     return Column(
       mainAxisSize: MainAxisSize.min,
       children: [
-        _PageHeader(title: 'Профиль', onBack: widget.onBack),
+        _PageHeader(title: context.l10n.profile, onBack: widget.onBack),
         Flexible(
           child: SingleChildScrollView(
             child: Column(
@@ -804,7 +804,7 @@ class _ProfilePageState extends State<_ProfilePage> {
                 ),
                 const SizedBox(height: 4),
                 Text(
-                  'в сети',
+                  context.l10n.online,
                   style: const TextStyle(fontSize: 13, color: Color(0xFF4CAF50)),
                 ),
 
@@ -816,8 +816,8 @@ class _ProfilePageState extends State<_ProfilePage> {
                     children: [
                       Row(
                         children: [
-                          const Text('О себе',
-                              style: TextStyle(fontSize: 13, color: AppColors.subtle)),
+                          Text(context.l10n.aboutLabel,
+                              style: const TextStyle(fontSize: 13, color: AppColors.subtle)),
                           const Spacer(),
                           Text(
                             '${_bioCtrl.text.length}/70',
@@ -833,7 +833,7 @@ class _ProfilePageState extends State<_ProfilePage> {
                         minLines: 1,
                         decoration: InputDecoration(
                           counterText: '',
-                          hintText: 'Любые подробности о себе...',
+                          hintText: context.l10n.aboutHint,
                           hintStyle: TextStyle(color: AppColors.subtle),
                           border: UnderlineInputBorder(),
                           focusedBorder: UnderlineInputBorder(
@@ -851,17 +851,17 @@ class _ProfilePageState extends State<_ProfilePage> {
                 // Fields
                 _InfoRow(
                   icon: Icons.person_outline,
-                  label: 'Имя',
+                  label: context.l10n.nameLabel,
                   value: user?.displayName ?? user?.name ?? '—',
                 ),
                 _InfoRow(
                   icon: Icons.alternate_email,
-                  label: 'Имя пользователя',
+                  label: context.l10n.username,
                   value: '@${user?.login ?? ''}',
                   trailing: IconButton(
                     icon: const Icon(Icons.edit_outlined, size: 16, color: AppColors.subtle),
                     onPressed: _changeLogin,
-                    tooltip: 'Изменить логин',
+                    tooltip: context.l10n.changeLogin,
                   ),
                 ),
                 // ── Редактируемый номер телефона ──────────────────────
@@ -878,7 +878,7 @@ class _ProfilePageState extends State<_ProfilePage> {
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
                             Text(
-                              'Номер телефона',
+                              context.l10n.phone,
                               style: const TextStyle(
                                   fontSize: 12, color: AppColors.subtle),
                             ),
@@ -912,7 +912,7 @@ class _ProfilePageState extends State<_ProfilePage> {
                         Padding(
                           padding: const EdgeInsets.only(left: 8),
                           child: Tooltip(
-                            message: 'Вставить номер из SIM-карты',
+                            message: context.l10n.insertFromSim,
                             child: _simLoading
                                 ? const SizedBox(
                                     width: 24,
@@ -950,7 +950,7 @@ class _ProfilePageState extends State<_ProfilePage> {
                               width: 18, height: 18,
                               child: CircularProgressIndicator(
                                   strokeWidth: 2, color: Colors.white))
-                          : const Text('Сохранить'),
+                          : Text(context.l10n.save),
                     ),
                   ),
                 ),
@@ -1051,9 +1051,9 @@ class _NotificationsPageState extends State<_NotificationsPage> {
   Widget build(BuildContext context) {
     if (_loading) {
       return Column(mainAxisSize: MainAxisSize.min, children: [
-        _PageHeader(title: 'Уведомления и звуки', onBack: widget.onBack),
+        _PageHeader(title: context.l10n.notifAndSounds, onBack: widget.onBack),
         Padding(
-          padding: EdgeInsets.all(32),
+          padding: const EdgeInsets.all(32),
           child: CircularProgressIndicator(color: Theme.of(context).colorScheme.primary),
         ),
       ]);
@@ -1062,64 +1062,64 @@ class _NotificationsPageState extends State<_NotificationsPage> {
     return Column(
       mainAxisSize: MainAxisSize.min,
       children: [
-        _PageHeader(title: 'Уведомления и звуки', onBack: widget.onBack),
+        _PageHeader(title: context.l10n.notifAndSounds, onBack: widget.onBack),
         Flexible(
           child: SingleChildScrollView(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                const _SectionLabel('Общие'),
+                _SectionLabel(context.l10n.generalSection),
                 _ToggleItem(
                   icon: Icons.volume_up_outlined,
-                  title: 'Звук уведомлений',
+                  title: context.l10n.notifSoundLabel,
                   value: _sound,
                   onChanged: (v) { setState(() => _sound = v); _s.setSoundEnabled(v); },
                 ),
                 _ToggleItem(
                   icon: Icons.vibration,
-                  title: 'Вибрация',
+                  title: context.l10n.vibrationLabel,
                   value: _vibration,
                   onChanged: (v) { setState(() => _vibration = v); _s.setVibrationEnabled(v); },
                 ),
                 _ToggleItem(
                   icon: Icons.preview_outlined,
-                  title: 'Предпросмотр сообщений',
-                  subtitle: 'Показывать текст в уведомлении',
+                  title: context.l10n.previewLabel,
+                  subtitle: context.l10n.previewSub,
                   value: _preview,
                   onChanged: (v) { setState(() => _preview = v); _s.setPreviewEnabled(v); },
                 ),
 
-                const _SectionLabel('Категории'),
+                _SectionLabel(context.l10n.categoriesLabel),
                 _ToggleItem(
                   icon: Icons.chat_outlined,
-                  title: 'Личные чаты',
+                  title: context.l10n.directChatsLabel,
                   value: _chats,
                   onChanged: (v) { setState(() => _chats = v); _s.setChatsEnabled(v); },
                 ),
                 _ToggleItem(
                   icon: Icons.group_outlined,
-                  title: 'Группы',
+                  title: context.l10n.groupsLabel,
                   value: _groups,
                   onChanged: (v) { setState(() => _groups = v); _s.setGroupsEnabled(v); },
                 ),
                 _ToggleItem(
                   icon: Icons.campaign_outlined,
-                  title: 'Сообщества',
+                  title: context.l10n.communitiesLabel,
                   value: _communities,
                   onChanged: (v) { setState(() => _communities = v); _s.setCommunitiesEnabled(v); },
                 ),
                 _ToggleItem(
                   icon: Icons.newspaper_outlined,
-                  title: 'Новости (от администратора)',
+                  title: context.l10n.newsLabel,
                   value: _news,
                   onChanged: (v) { setState(() => _news = v); _s.setNewsEnabled(v); },
                 ),
 
-                const _SectionLabel('Звонки'),
+                _SectionLabel(context.l10n.callsLabel),
                 _ToggleItem(
                   icon: Icons.call_outlined,
-                  title: 'Принимать звонки',
-                  subtitle: 'Показывать входящие звонки на устройстве',
+                  title: context.l10n.acceptCallsLabel,
+                  subtitle: context.l10n.acceptCallsSub,
                   value: _calls,
                   onChanged: (v) { setState(() => _calls = v); _s.setCallsEnabled(v); },
                 ),
@@ -1155,17 +1155,17 @@ class _SessionsPage extends StatelessWidget {
   Widget build(BuildContext context) {
     if (service == null) {
       return Column(mainAxisSize: MainAxisSize.min, children: [
-        _PageHeader(title: 'Активные сеансы', onBack: onBack),
-        const Padding(
-          padding: EdgeInsets.all(32),
-          child: Text('Сервис недоступен', style: TextStyle(color: AppColors.subtle)),
+        _PageHeader(title: context.l10n.activeSessions, onBack: onBack),
+        Padding(
+          padding: const EdgeInsets.all(32),
+          child: Text(context.l10n.serviceUnavailable, style: const TextStyle(color: AppColors.subtle)),
         ),
       ]);
     }
     return Column(
       mainAxisSize: MainAxisSize.min,
       children: [
-        _PageHeader(title: 'Активные сеансы', onBack: onBack),
+        _PageHeader(title: context.l10n.activeSessions, onBack: onBack),
         Flexible(
           child: DevicesScreen(
             auth: auth,
@@ -1393,7 +1393,7 @@ class _ThemePageState extends State<_ThemePage> {
     return showDialog<Color>(
       context: context,
       builder: (dCtx) => AlertDialog(
-        title: const Text('Выбор цвета', style: TextStyle(fontSize: 16)),
+        title: Text(context.l10n.colorPickerTitle, style: const TextStyle(fontSize: 16)),
         content: SizedBox(
           width: 280,
           child: StatefulBuilder(
@@ -1450,10 +1450,10 @@ class _ThemePageState extends State<_ThemePage> {
         actions: [
           TextButton(
               onPressed: () => Navigator.pop(dCtx),
-              child: const Text('Отмена')),
+              child: Text(context.l10n.cancel)),
           FilledButton(
               onPressed: () => Navigator.pop(dCtx, picked),
-              child: const Text('Применить')),
+              child: Text(context.l10n.apply)),
         ],
       ),
     );
@@ -1473,20 +1473,20 @@ class _ThemePageState extends State<_ThemePage> {
     final name = await showDialog<String>(
       context: context,
       builder: (dCtx) => AlertDialog(
-        title: const Text('Сохранить тему'),
+        title: Text(context.l10n.saveTheme),
         content: TextField(
           controller: ctrl,
           autofocus: true,
-          decoration: const InputDecoration(hintText: 'Название темы'),
+          decoration: InputDecoration(hintText: context.l10n.themeNameHint),
           onSubmitted: (v) => Navigator.pop(dCtx, v.trim()),
         ),
         actions: [
           TextButton(
               onPressed: () => Navigator.pop(dCtx),
-              child: const Text('Отмена')),
+              child: Text(context.l10n.cancel)),
           FilledButton(
               onPressed: () => Navigator.pop(dCtx, ctrl.text.trim()),
-              child: const Text('Сохранить')),
+              child: Text(context.l10n.save)),
         ],
       ),
     );
@@ -1545,7 +1545,7 @@ class _ThemePageState extends State<_ThemePage> {
     return Column(
       mainAxisSize: MainAxisSize.min,
       children: [
-        _PageHeader(title: 'Оформление', onBack: widget.onBack),
+        _PageHeader(title: context.l10n.appearance, onBack: widget.onBack),
         Flexible(
           child: SingleChildScrollView(
             child: Column(
@@ -1553,7 +1553,7 @@ class _ThemePageState extends State<_ThemePage> {
               children: [
 
                 // ── Preset themes row ────────────────────────────────────
-                const _SectionLabel('Тема'),
+                _SectionLabel(context.l10n.themeLabel),
                 SizedBox(
                   height: 110,
                   child: ListView(
@@ -1587,7 +1587,7 @@ class _ThemePageState extends State<_ThemePage> {
                             children: [
                               Icon(Icons.add_circle_outline, size: 28, color: primary),
                               const SizedBox(height: 4),
-                              Text('Сохранить',
+                              Text(context.l10n.save,
                                   textAlign: TextAlign.center,
                                   style: TextStyle(fontSize: 9, color: primary)),
                             ],
@@ -1602,9 +1602,9 @@ class _ThemePageState extends State<_ThemePage> {
                 Padding(
                   padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 2),
                   child: Row(children: [
-                    const Expanded(
-                      child: Text('Авто день/ночь',
-                          style: TextStyle(fontSize: 14))),
+                    Expanded(
+                      child: Text(context.l10n.autoDayNight,
+                          style: const TextStyle(fontSize: 14))),
                     Switch(
                       value: _autoNight,
                       onChanged: (v) {
@@ -1620,14 +1620,14 @@ class _ThemePageState extends State<_ThemePage> {
                 ),
                 if (_autoNight) ...[
                   _TimeSelector(
-                    label: 'Светлая с', hour: _lightH,
+                    label: context.l10n.lightFrom, hour: _lightH,
                     onChanged: (h) {
                       setState(() => _lightH = h);
                       p.setAutoNight(lightHour: h, darkHour: _darkH);
                     },
                   ),
                   _TimeSelector(
-                    label: 'Тёмная с', hour: _darkH,
+                    label: context.l10n.darkFrom, hour: _darkH,
                     onChanged: (h) {
                       setState(() => _darkH = h);
                       p.setAutoNight(lightHour: _lightH, darkHour: h);
@@ -1636,7 +1636,7 @@ class _ThemePageState extends State<_ThemePage> {
                 ],
 
                 // ── Primary color ────────────────────────────────────────
-                const _SectionLabel('Основной цвет'),
+                _SectionLabel(context.l10n.primaryColorLabel),
                 Padding(
                   padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
                   child: Wrap(
@@ -1696,9 +1696,9 @@ class _ThemePageState extends State<_ThemePage> {
                 ),
 
                 // ── Chat colors ──────────────────────────────────────────
-                const _SectionLabel('Цвета чата'),
+                _SectionLabel(context.l10n.chatColorsLabel),
                 colorTile(
-                  label: 'Фон чата',
+                  label: context.l10n.chatBg,
                   current: p.chatBgColor ??
                       (isDark
                           ? const Color(0xFF121212)
@@ -1708,7 +1708,7 @@ class _ThemePageState extends State<_ThemePage> {
                   onReset: p.chatBgColor != null ? () => p.setChatBgColor(null) : null,
                 ),
                 colorTile(
-                  label: 'Мои сообщения',
+                  label: context.l10n.myMessages,
                   current: p.effectiveMyBubble,
                   presets: _bubblePresets,
                   onPicked: (c) => p.setMyBubbleColor(c),
@@ -1716,7 +1716,7 @@ class _ThemePageState extends State<_ThemePage> {
                       p.myBubbleColor != null ? () => p.setMyBubbleColor(null) : null,
                 ),
                 colorTile(
-                  label: 'Сообщения собеседника',
+                  label: context.l10n.theirMessages,
                   current: p.effectiveOtherBubble,
                   presets: _bubblePresets,
                   onPicked: (c) => p.setOtherBubbleColor(c),
@@ -1725,7 +1725,7 @@ class _ThemePageState extends State<_ThemePage> {
                       : null,
                 ),
                 colorTile(
-                  label: 'Кнопка отправки / записи',
+                  label: context.l10n.sendButton,
                   current: p.effectiveSendButton,
                   presets: _primaryPresets,
                   onPicked: (c) => p.setSendButtonColor(c),
@@ -1763,7 +1763,7 @@ class _ThemePageState extends State<_ThemePage> {
                               topRight: Radius.circular(12),
                               bottomRight: Radius.circular(12)),
                           ),
-                          child: Text('Привет! 👋',
+                          child: Text(context.l10n.bubblePreviewOther,
                               style: TextStyle(
                                 fontSize: 13,
                                 color: p.effectiveOtherBubble.computeLuminance() > 0.5
@@ -1784,7 +1784,7 @@ class _ThemePageState extends State<_ThemePage> {
                               topRight: Radius.circular(12),
                               bottomLeft: Radius.circular(12)),
                           ),
-                          child: Text('Привет! 😊',
+                          child: Text(context.l10n.bubblePreviewMe,
                               style: TextStyle(
                                 fontSize: 13,
                                 color: p.effectiveMyBubble.computeLuminance() > 0.5
@@ -1797,7 +1797,7 @@ class _ThemePageState extends State<_ThemePage> {
                 ),
 
                 // ── Wallpaper ────────────────────────────────────────────
-                const _SectionLabel('Обои чата'),
+                _SectionLabel(context.l10n.chatWallpaper),
                 InkWell(
                   onTap: _pickWallpaper,
                   child: Padding(
@@ -1825,9 +1825,9 @@ class _ThemePageState extends State<_ThemePage> {
                             : null,
                       ),
                       const SizedBox(width: 14),
-                      const Expanded(
-                        child: Text('Выбрать изображение / GIF',
-                            style: TextStyle(fontSize: 14)),
+                      Expanded(
+                        child: Text(context.l10n.wallpaperPick,
+                            style: const TextStyle(fontSize: 14)),
                       ),
                       if (p.wallpaperPath != null)
                         IconButton(
@@ -1845,13 +1845,14 @@ class _ThemePageState extends State<_ThemePage> {
                 ),
 
                 // ── Font ─────────────────────────────────────────────────
-                const _SectionLabel('Шрифт'),
+                _SectionLabel(context.l10n.fontLabel),
                 Padding(
                   padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
                   child: Wrap(
                     spacing: 8, runSpacing: 8,
                     children: _fonts.map((f) {
                       final fv  = f == 'Системный' ? null : f;
+                      final fl  = f == 'Системный' ? context.l10n.systemFont : f;
                       final sel = p.fontFamily == fv;
                       return GestureDetector(
                         onTap: () => p.setFontFamily(fv),
@@ -1871,7 +1872,7 @@ class _ThemePageState extends State<_ThemePage> {
                                     ? primary
                                     : AppColors.subtle.withValues(alpha: 0.25)),
                           ),
-                          child: Text(f,
+                          child: Text(fl,
                               style: TextStyle(
                                 fontSize: 12,
                                 fontFamily: fv,
@@ -1885,7 +1886,7 @@ class _ThemePageState extends State<_ThemePage> {
                 ),
 
                 // ── Text scale ───────────────────────────────────────────
-                const _SectionLabel('Размер текста'),
+                _SectionLabel(context.l10n.textSizeLabel),
                 Padding(
                   padding: const EdgeInsets.symmetric(horizontal: 16),
                   child: Row(children: [
@@ -1973,9 +1974,16 @@ class _StoragePage extends StatefulWidget {
 class _StoragePageState extends State<_StoragePage> {
   static const _kMaxStorage = 'storage_max_mb';
   double _maxMb = 1024;
-  int _cacheSizeBytes = 0;
+
+  // ── Размеры двух независимых хранилищ ────────────────────────────────────────
+  /// Временный кэш: OS temp + внутренние загрузки FileDownloadService
+  int _cacheBytes = 0;
+  /// Сохранённые файлы: папка CaspianMessenger (пользовательские)
+  int _savedBytes = 0;
+
   bool _loading = true;
-  bool _clearing = false;
+  bool _clearingCache = false;
+  bool _clearingSaved = false;
 
   @override
   void initState() {
@@ -1984,19 +1992,45 @@ class _StoragePageState extends State<_StoragePage> {
   }
 
   Future<void> _load() async {
+    if (!mounted) return;
+    setState(() => _loading = true);
+
     final prefs = await SharedPreferences.getInstance();
     _maxMb = (prefs.getInt(_kMaxStorage) ?? 1024).toDouble();
-    int size = 0;
+
+    int cacheSize = 0;
+    int savedSize = 0;
+
     if (!kIsWeb) {
+      // 1. OS временная директория (аудиозаписи, системный кэш)
       try {
-        final dir = await getTemporaryDirectory();
-        size = await _dirSize(dir);
+        final tmp = await getTemporaryDirectory();
+        cacheSize += await _dirSize(tmp);
+      } catch (_) {}
+
+      // 2. Внутренние загрузки FileDownloadService → {AppDocuments}/downloads/
+      try {
+        final docs = await getApplicationDocumentsDirectory();
+        cacheSize += await _dirSize(Directory('${docs.path}/downloads'));
+      } catch (_) {}
+
+      // 3. Папка CaspianMessenger (явно сохранённые пользователем файлы)
+      try {
+        savedSize = await MediaSaveService.instance.defaultFolderSizeBytes;
       } catch (_) {}
     }
-    if (mounted) setState(() { _cacheSizeBytes = size; _loading = false; });
+
+    if (mounted) {
+      setState(() {
+        _cacheBytes = cacheSize;
+        _savedBytes = savedSize;
+        _loading = false;
+      });
+    }
   }
 
   Future<int> _dirSize(Directory dir) async {
+    if (!dir.existsSync()) return 0;
     int total = 0;
     try {
       await for (final e in dir.list(recursive: true)) {
@@ -2012,20 +2046,73 @@ class _StoragePageState extends State<_StoragePage> {
     return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} МБ';
   }
 
+  /// Очищает временный кэш приложения (OS temp + загрузки FileDownloadService).
   Future<void> _clearCache() async {
-    setState(() => _clearing = true);
+    setState(() => _clearingCache = true);
     try {
       if (!kIsWeb) {
-        final dir = await getTemporaryDirectory();
-        await dir.delete(recursive: true);
-        await dir.create();
+        // OS temp
+        final tmp = await getTemporaryDirectory();
+        await tmp.delete(recursive: true);
+        await tmp.create();
+        // Загрузки FileDownloadService (сбрасывает состояние стримов)
+        await FileDownloadService.instance.clearAll();
       }
     } catch (_) {}
     await _load();
-    setState(() => _clearing = false);
-    if (mounted) {
-            AppSnack.info(context, 'Кэш очищен');
-    }
+    if (mounted) AppSnack.info(context, context.l10n.cacheCleared);
+    setState(() => _clearingCache = false);
+  }
+
+  /// Очищает папку CaspianMessenger (явно сохранённые пользователем файлы).
+  Future<void> _clearSaved() async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text(context.l10n.deleteSavedTitle),
+        content: Text(context.l10n.deleteSavedDesc),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: Text(context.l10n.cancel),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: Text(context.l10n.delete, style: const TextStyle(color: Colors.red)),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+
+    setState(() => _clearingSaved = true);
+    try {
+      await MediaSaveService.instance.clearDefaultFolder();
+    } catch (_) {}
+    await _load();
+    if (mounted) AppSnack.info(context, context.l10n.savedFilesCleared);
+    setState(() => _clearingSaved = false);
+  }
+
+  Widget _clearButton({
+    required bool clearing,
+    required VoidCallback onPressed,
+  }) {
+    return TextButton(
+      onPressed: clearing ? null : onPressed,
+      child: clearing
+          ? SizedBox(
+              width: 16, height: 16,
+              child: CircularProgressIndicator(
+                strokeWidth: 2,
+                color: Theme.of(context).colorScheme.primary,
+              ),
+            )
+          : Text(
+              context.l10n.clearBtn,
+              style: TextStyle(color: Theme.of(context).colorScheme.primary),
+            ),
+    );
   }
 
   @override
@@ -2033,55 +2120,77 @@ class _StoragePageState extends State<_StoragePage> {
     return Column(
       mainAxisSize: MainAxisSize.min,
       children: [
-        _PageHeader(title: 'Данные и хранилище', onBack: widget.onBack),
+        _PageHeader(title: context.l10n.dataAndStorage, onBack: widget.onBack),
         Flexible(
           child: _loading
               ? Center(
                   child: Padding(
-                    padding: EdgeInsets.all(32),
-                    child: CircularProgressIndicator(color: Theme.of(context).colorScheme.primary),
-                  ))
+                    padding: const EdgeInsets.all(32),
+                    child: CircularProgressIndicator(
+                      color: Theme.of(context).colorScheme.primary,
+                    ),
+                  ),
+                )
               : SingleChildScrollView(
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.stretch,
                     children: [
-                      const _SectionLabel('Использование'),
+                      // ── Использование ──────────────────────────────────────
+                      _SectionLabel(context.l10n.usageSection),
+
+                      // Временный кэш (загрузки + OS temp)
                       _SettingsItem(
-                        icon: Icons.folder_outlined,
-                        title: 'Временный кэш',
-                        subtitle: _fmt(_cacheSizeBytes),
-                        trailing: TextButton(
-                          onPressed: _clearing ? null : _clearCache,
-                          child: _clearing
-                              ? SizedBox(
-                                  width: 16, height: 16,
-                                  child: CircularProgressIndicator(
-                                      strokeWidth: 2, color: Theme.of(context).colorScheme.primary))
-                              : Text('Очистить',
-                                  style: TextStyle(color: Theme.of(context).colorScheme.primary)),
+                        icon: Icons.cached_outlined,
+                        title: context.l10n.tempCache,
+                        subtitle: _cacheBytes == 0
+                            ? context.l10n.empty
+                            : _fmt(_cacheBytes),
+                        trailing: _clearButton(
+                          clearing: _clearingCache,
+                          onPressed: _clearCache,
                         ),
                       ),
 
-                      const _SectionLabel('Лимит данных'),
+                      // Сохранённые файлы (папка CaspianMessenger)
+                      _SettingsItem(
+                        icon: Icons.folder_outlined,
+                        title: context.l10n.savedFiles,
+                        subtitle: _savedBytes == 0
+                            ? context.l10n.empty
+                            : context.l10n.savedFilesSub(_fmt(_savedBytes)),
+                        trailing: _savedBytes > 0
+                            ? _clearButton(
+                                clearing: _clearingSaved,
+                                onPressed: _clearSaved,
+                              )
+                            : null,
+                      ),
+
+                      // ── Лимит кэша ─────────────────────────────────────────
+                      _SectionLabel(context.l10n.dataLimitSection),
                       Padding(
-                        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 16, vertical: 8),
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
                             Text(
-                              'Максимум: ${_maxMb.round()} МБ',
-                              style: const TextStyle(fontSize: 13, color: AppColors.subtle),
+                              context.l10n.dataLimitMax(_maxMb.round()),
+                              style: const TextStyle(
+                                  fontSize: 13, color: AppColors.subtle),
                             ),
                             Slider(
                               value: _maxMb,
                               min: 128,
                               max: 8192,
                               divisions: 14,
-                              activeColor: Theme.of(context).colorScheme.primary,
+                              activeColor:
+                                  Theme.of(context).colorScheme.primary,
                               label: '${_maxMb.round()} МБ',
                               onChanged: (v) => setState(() => _maxMb = v),
                               onChangeEnd: (v) async {
-                                final prefs = await SharedPreferences.getInstance();
+                                final prefs =
+                                    await SharedPreferences.getInstance();
                                 await prefs.setInt(_kMaxStorage, v.round());
                               },
                             ),
@@ -2202,7 +2311,7 @@ class _AudioVideoPageState extends State<_AudioVideoPage> {
     return Column(
       mainAxisSize: MainAxisSize.min,
       children: [
-        _PageHeader(title: 'Звук и камера', onBack: widget.onBack),
+        _PageHeader(title: context.l10n.soundAndCamera, onBack: widget.onBack),
         Flexible(
           child: _loading
               ? Center(
@@ -2215,13 +2324,13 @@ class _AudioVideoPageState extends State<_AudioVideoPage> {
                       padding: const EdgeInsets.all(32),
                       child: Column(
                         mainAxisSize: MainAxisSize.min,
-                        children: const [
-                          Icon(Icons.mic_off_outlined, size: 48, color: AppColors.subtle),
-                          SizedBox(height: 12),
+                        children: [
+                          const Icon(Icons.mic_off_outlined, size: 48, color: AppColors.subtle),
+                          const SizedBox(height: 12),
                           Text(
-                            'Разрешите доступ к микрофону и камере в системных настройках',
+                            context.l10n.micCamPermission,
                             textAlign: TextAlign.center,
-                            style: TextStyle(color: AppColors.subtle, fontSize: 14),
+                            style: const TextStyle(color: AppColors.subtle, fontSize: 14),
                           ),
                         ],
                       ),
@@ -2230,13 +2339,13 @@ class _AudioVideoPageState extends State<_AudioVideoPage> {
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.stretch,
                         children: [
-                          _deviceSection('Микрофон', Icons.mic_outlined,
+                          _deviceSection(context.l10n.microphoneLabel, Icons.mic_outlined,
                               _mics, _selMic, _kMic,
                               (v) => setState(() => _selMic = v)),
-                          _deviceSection('Динамик / наушники', Icons.headphones,
+                          _deviceSection(context.l10n.speakerLabel, Icons.headphones,
                               _speakers, _selSpeaker, _kSpeaker,
                               (v) => setState(() => _selSpeaker = v)),
-                          _deviceSection('Камера', Icons.videocam_outlined,
+                          _deviceSection(context.l10n.cameraLabel, Icons.videocam_outlined,
                               _cameras, _selCamera, _kCamera,
                               (v) => setState(() => _selCamera = v)),
                           const SizedBox(height: 16),
@@ -2298,7 +2407,7 @@ class _LanguagePageState extends State<_LanguagePage> {
     return Column(
       mainAxisSize: MainAxisSize.min,
       children: [
-        _PageHeader(title: 'Язык', onBack: widget.onBack),
+        _PageHeader(title: context.l10n.languageTitle, onBack: widget.onBack),
         ..._langs.map(((String, String, String) l) {
           final (code, name, flag) = l;
           return RadioListTile<String>(
@@ -2427,9 +2536,9 @@ class _MobileSettingsPageState extends State<MobileSettingsPage> {
               children: [
                 Image.asset('assets/images/logo.png', width: 32, height: 32),
                 const SizedBox(width: 10),
-                const Text(
-                  'Настройки',
-                  style: TextStyle(
+                Text(
+                  context.l10n.settingsTitle,
+                  style: const TextStyle(
                     fontSize: 28,
                     fontWeight: FontWeight.w700,
                     letterSpacing: -0.5,
@@ -2468,7 +2577,7 @@ class _MobileSettingsPageState extends State<MobileSettingsPage> {
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         Text(
-                          user?.displayName ?? user?.name ?? 'Профиль',
+                          user?.displayName ?? user?.name ?? context.l10n.profile,
                           style: const TextStyle(
                               fontSize: 17, fontWeight: FontWeight.w600),
                         ),
@@ -2515,10 +2624,10 @@ class _MobileSettingsPageState extends State<MobileSettingsPage> {
                           size: 19, color: Colors.white),
                     ),
                     const SizedBox(width: 14),
-                    const Expanded(
+                    Expanded(
                       child: Text(
-                        'Размер текста',
-                        style: TextStyle(fontSize: 16),
+                        context.l10n.textSizeLabel,
+                        style: const TextStyle(fontSize: 16),
                       ),
                     ),
                     SizedBox(
@@ -2565,42 +2674,42 @@ class _MobileSettingsPageState extends State<MobileSettingsPage> {
               _MobileSettingsTile(
                 icon: Icons.notifications_outlined,
                 iconBg: const Color(0xFFE91E63),
-                title: 'Уведомления и звуки',
+                title: context.l10n.notifAndSounds,
                 onTap: () => _openPage(context, _Page.notifications),
               ),
               _MobileSettingsTile(
                 icon: Icons.devices_outlined,
                 iconBg: const Color(0xFF2196F3),
-                title: 'Активные сеансы',
-                subtitle: 'Устройства с активной сессией',
+                title: context.l10n.activeSessions,
+                subtitle: context.l10n.activeSessionsSub,
                 onTap: () => _openPage(context, _Page.sessions),
               ),
               _MobileSettingsTile(
                 icon: Icons.palette_outlined,
                 iconBg: const Color(0xFF9C27B0),
-                title: 'Оформление',
-                subtitle: 'Тема, цвета, шрифт',
+                title: context.l10n.appearance,
+                subtitle: context.l10n.appearanceSub,
                 onTap: () => _openPage(context, _Page.theme),
               ),
               _MobileSettingsTile(
                 icon: Icons.storage_outlined,
                 iconBg: const Color(0xFF4CAF50),
-                title: 'Данные и хранилище',
-                subtitle: 'Кэш, медиафайлы',
+                title: context.l10n.dataAndStorage,
+                subtitle: context.l10n.dataAndStorageSub,
                 onTap: () => _openPage(context, _Page.storage),
               ),
               _MobileSettingsTile(
                 icon: Icons.mic_outlined,
                 iconBg: const Color(0xFFFF9800),
-                title: 'Звук и камера',
-                subtitle: 'Микрофон, динамик, камера',
+                title: context.l10n.soundAndCamera,
+                subtitle: context.l10n.soundAndCameraSub,
                 onTap: () => _openPage(context, _Page.audioVideo),
               ),
               _MobileSettingsTile(
                 icon: Icons.language_outlined,
                 iconBg: const Color(0xFF00BCD4),
-                title: 'Язык',
-                subtitle: _langName(context),
+                title: context.l10n.languageTitle,
+                subtitle: context.l10n.languageSub,
                 onTap: () => _openPage(context, _Page.language),
               ),
             ],
@@ -2616,25 +2725,24 @@ class _MobileSettingsPageState extends State<MobileSettingsPage> {
               _MobileSettingsTile(
                 icon: Icons.logout_rounded,
                 iconBg: Colors.red,
-                title: 'Выйти из аккаунта',
+                title: context.l10n.logoutTitle,
                 titleColor: Colors.red,
                 showChevron: false,
                 onTap: () async {
                   final ok = await showDialog<bool>(
                     context: context,
                     builder: (ctx) => AlertDialog(
-                      title: const Text('Выход'),
-                      content: const Text(
-                          'Вы уверены, что хотите выйти из аккаунта?'),
+                      title: Text(context.l10n.logoutConfirm),
+                      content: Text(context.l10n.logoutQuestion),
                       actions: [
                         TextButton(
                           onPressed: () => Navigator.pop(ctx, false),
-                          child: const Text('Отмена'),
+                          child: Text(context.l10n.cancel),
                         ),
                         TextButton(
                           onPressed: () => Navigator.pop(ctx, true),
-                          child: const Text('Выйти',
-                              style: TextStyle(color: Colors.red)),
+                          child: Text(context.l10n.logoutBtn,
+                              style: const TextStyle(color: Colors.red)),
                         ),
                       ],
                     ),
@@ -2646,11 +2754,11 @@ class _MobileSettingsPageState extends State<MobileSettingsPage> {
           ),
 
           // ── Версия приложения ─────────────────────────────────────
-          const Padding(
-            padding: EdgeInsets.symmetric(vertical: 20),
+          Padding(
+            padding: const EdgeInsets.symmetric(vertical: 20),
             child: Column(
               children: [
-                Text(
+                const Text(
                   'Caspian Messenger',
                   style: TextStyle(
                     fontSize: 14,
@@ -2658,10 +2766,10 @@ class _MobileSettingsPageState extends State<MobileSettingsPage> {
                     color: AppColors.subtle,
                   ),
                 ),
-                SizedBox(height: 2),
+                const SizedBox(height: 2),
                 Text(
-                  'Версия 1.0.0',
-                  style: TextStyle(fontSize: 12, color: AppColors.subtle),
+                  context.l10n.appVersion,
+                  style: const TextStyle(fontSize: 12, color: AppColors.subtle),
                 ),
               ],
             ),
@@ -2671,15 +2779,6 @@ class _MobileSettingsPageState extends State<MobileSettingsPage> {
     );
   }
 
-  String _langName(BuildContext context) {
-    final locale = ThemeProvider.of(context).locale;
-    return switch (locale?.languageCode) {
-      'ru' => 'Русский',
-      'en' => 'English',
-      'kk' => 'Қазақша',
-      _ => 'Русский',
-    };
-  }
 }
 
 // ── Helper widgets ────────────────────────────────────────────────────────────

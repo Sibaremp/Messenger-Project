@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:flutter_webrtc/flutter_webrtc.dart';
 import 'package:http/http.dart' as http;
 import 'package:signalr_netcore/signalr_client.dart';
+import 'package:signalr_netcore/itransport.dart' show HttpTransportType;
 import 'api_config.dart';
 import 'auth_service.dart';
 import 'call_state.dart';
@@ -25,6 +26,7 @@ class SignalingService {
       StreamController<ParticipantEvent>.broadcast();
   final _participantLeftCtrl =
       StreamController<ParticipantEvent>.broadcast();
+  final _hubReconnectedCtrl = StreamController<void>.broadcast();
 
   Stream<IncomingCallInfo> get onIncomingCall => _incomingCallCtrl.stream;
   Stream<OfferData> get onOffer => _offerCtrl.stream;
@@ -36,6 +38,8 @@ class SignalingService {
       _participantJoinedCtrl.stream;
   Stream<ParticipantEvent> get onParticipantLeft =>
       _participantLeftCtrl.stream;
+  /// Срабатывает после каждого успешного переподключения хаба.
+  Stream<void> get onHubReconnected => _hubReconnectedCtrl.stream;
 
   bool get isConnected =>
       _hub?.state == HubConnectionState.Connected;
@@ -44,16 +48,32 @@ class SignalingService {
     _connect();
   }
 
+  /// Инициирует подключение хаба, если ещё не подключён.
+  /// Вызывать после логина или при возобновлении приложения.
+  void ensureConnected() {
+    if (_disposed) return;
+    if (_hub?.state == HubConnectionState.Connected) return;
+    _connect();
+  }
+
   void _connect() {
-    if (_disposed || _auth.token == null) return;
+    if (_disposed) return;
+    if (_auth.token == null) {
+      // Токен ещё не доступен (пользователь не залогинен) — повторим позже.
+      _scheduleReconnect();
+      return;
+    }
     try {
       _hub = HubConnectionBuilder()
           .withUrl(
             ApiConfig.callHubUrl,
             options: HttpConnectionOptions(
               accessTokenFactory: () async => _auth.token ?? '',
+              transport: HttpTransportType.WebSockets,
+              skipNegotiation: true,
             ),
           )
+          .withAutomaticReconnect()
           .build();
 
       _hub!.on('IncomingCall', _onIncomingCall);
@@ -70,6 +90,7 @@ class SignalingService {
       });
       _hub!.start()?.then((_) {
         _log('Hub connected to ${ApiConfig.callHubUrl}');
+        if (!_hubReconnectedCtrl.isClosed) _hubReconnectedCtrl.add(null);
       }).catchError((e) {
         _log('Hub start failed: $e');
         _scheduleReconnect();
@@ -160,6 +181,31 @@ class SignalingService {
 
   // ── REST helpers ──────────────────────────────────────────────────────────
 
+  /// Возвращает активный групповой звонок для чата, или null если нет.
+  Future<IncomingCallInfo?> fetchActiveCallForChat(String chatId) async {
+    try {
+      final r = await http.get(
+        Uri.parse('${ApiConfig.baseUrl}/calls/active-for-chat/$chatId'),
+        headers: {
+          ...ApiConfig.baseHeaders,
+          'Authorization': 'Bearer ${_auth.token ?? ""}',
+        },
+      ).timeout(ApiConfig.httpTimeout);
+      if (r.statusCode == 200) {
+        final data = jsonDecode(r.body) as Map<String, dynamic>;
+        return IncomingCallInfo(
+          callId:     data['callId'] as String,
+          callerId:   data['callerId'] as String,
+          callerName: data['callerName'] as String,
+          isVideo:    data['isVideo'] as bool? ?? false,
+          isGroup:    true,
+          chatId:     chatId,
+        );
+      }
+    } catch (_) {}
+    return null;
+  }
+
   /// Получает список ICE-серверов с сервера (GET /api/calls/ice-servers).
   /// При любой ошибке возвращает пустой список — вызывающий код должен
   /// использовать fallback (публичные STUN Google).
@@ -168,8 +214,8 @@ class SignalingService {
       final r = await http.get(
         Uri.parse('${ApiConfig.baseUrl}/calls/ice-servers'),
         headers: {
+          ...ApiConfig.baseHeaders,
           'Authorization': 'Bearer ${_auth.token ?? ""}',
-          'Content-Type': 'application/json',
         },
       ).timeout(ApiConfig.httpTimeout);
       if (r.statusCode == 200) {
@@ -205,6 +251,11 @@ class SignalingService {
 
   Future<void> joinCall(String callId) async {
     await _hub?.invoke('JoinCall', args: [callId]);
+  }
+
+  /// Переподключается к группе звонка после реконнекта SignalR.
+  Future<void> rejoinCall(String callId) async {
+    await _hub?.invoke('RejoinCall', args: [callId]);
   }
 
   Future<void> leaveCall(String callId) async {
@@ -269,5 +320,6 @@ class SignalingService {
     if (!_callEndedCtrl.isClosed) await _callEndedCtrl.close();
     if (!_participantJoinedCtrl.isClosed) await _participantJoinedCtrl.close();
     if (!_participantLeftCtrl.isClosed) await _participantLeftCtrl.close();
+    if (!_hubReconnectedCtrl.isClosed) await _hubReconnectedCtrl.close();
   }
 }

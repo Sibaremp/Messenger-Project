@@ -2,6 +2,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import '../models.dart';
 import '../app_constants.dart';
+import '../l10n/app_localizations.dart';
 import '../services/chat_service.dart';
 import '../services/auth_service.dart' as svc;
 import '../services/signaling_service.dart';
@@ -142,7 +143,7 @@ class _SearchScreenState extends State<SearchScreen>
               color: isDark ? Colors.white : Colors.black87,
             ),
             decoration: InputDecoration(
-              hintText: 'Поиск чатов, сообщений, файлов…',
+              hintText: context.l10n.searchChatsMessagesFiles,
               hintStyle: TextStyle(
                 color: AppColors.subtle.withValues(alpha: 0.6),
                 fontSize: 14,
@@ -181,9 +182,9 @@ class _SearchScreenState extends State<SearchScreen>
           labelStyle:
               const TextStyle(fontWeight: FontWeight.w600, fontSize: 13),
           tabs: [
-            Tab(text: 'Чаты (${_chatResults.length})'),
-            Tab(text: 'Сообщения (${_messageResults.length})'),
-            Tab(text: 'Файлы (${_fileResults.length})'),
+            Tab(text: context.l10n.searchTabChats(_chatResults.length)),
+            Tab(text: context.l10n.searchTabMessages(_messageResults.length)),
+            Tab(text: context.l10n.searchTabFiles(_fileResults.length)),
           ],
         ),
       ),
@@ -211,13 +212,13 @@ class _SearchScreenState extends State<SearchScreen>
           Icon(Icons.search,
               size: 56, color: AppColors.subtle.withValues(alpha: 0.4)),
           const SizedBox(height: 16),
-          const Text(
-            'Введите запрос для поиска',
-            style: TextStyle(color: AppColors.subtle, fontSize: 15),
+          Text(
+            context.l10n.enterQuery,
+            style: const TextStyle(color: AppColors.subtle, fontSize: 15),
           ),
           const SizedBox(height: 8),
           Text(
-            'Ищите чаты, сообщения или файлы',
+            context.l10n.searchHint,
             style: TextStyle(
                 color: AppColors.subtle.withValues(alpha: 0.6), fontSize: 13),
           ),
@@ -229,7 +230,7 @@ class _SearchScreenState extends State<SearchScreen>
   // ── Результаты: Чаты ───────────────────────────────────────────
 
   Widget _buildChatResults() {
-    if (_chatResults.isEmpty) return _noResults('Чаты не найдены');
+    if (_chatResults.isEmpty) return _noResults(context.l10n.chatsNotFound);
     return ListView.builder(
       itemCount: _chatResults.length,
       itemBuilder: (_, i) {
@@ -259,7 +260,7 @@ class _SearchScreenState extends State<SearchScreen>
                         color: Theme.of(context).colorScheme.primary.withValues(alpha: 0.12),
                         borderRadius: BorderRadius.circular(6),
                       ),
-                      child: Text('Академ.',
+                      child: Text(context.l10n.academicShort,
                           style: TextStyle(
                               fontSize: 10,
                               color: Theme.of(context).colorScheme.primary,
@@ -278,18 +279,18 @@ class _SearchScreenState extends State<SearchScreen>
   String _chatTypeLabel(Chat chat) {
     switch (chat.type) {
       case ChatType.direct:
-        return 'Личный чат';
+        return context.l10n.directChat;
       case ChatType.group:
-        return 'Группа • ${chat.members.length + 1} участников';
+        return context.l10n.chatTypeGroup(chat.members.length + 1);
       case ChatType.community:
-        return 'Сообщество • ${chat.members.length + 1} участников';
+        return context.l10n.chatTypeCommunity(chat.members.length + 1);
     }
   }
 
   // ── Результаты: Сообщения ──────────────────────────────────────
 
   Widget _buildMessageResults() {
-    if (_messageResults.isEmpty) return _noResults('Сообщения не найдены');
+    if (_messageResults.isEmpty) return _noResults(context.l10n.messagesNotFound);
     return ListView.builder(
       itemCount: _messageResults.length,
       itemBuilder: (_, i) {
@@ -339,7 +340,7 @@ class _SearchScreenState extends State<SearchScreen>
 
   Widget _buildFileResults() {
     if (_fileResults.isEmpty && _query.isNotEmpty) {
-      return _noResults('Файлы не найдены');
+      return _noResults(context.l10n.filesNotFound);
     }
     return Column(
       children: [
@@ -348,25 +349,25 @@ class _SearchScreenState extends State<SearchScreen>
           padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
           child: Row(
             children: [
-              _fileFilterChip('Все', _fileTypeFilter == null, () {
+              _fileFilterChip(context.l10n.allFiles, _fileTypeFilter == null, () {
                 setState(() => _fileTypeFilter = null);
                 if (_query.isNotEmpty) _performSearch();
               }),
               const SizedBox(width: 6),
-              _fileFilterChip('Фото', _fileTypeFilter == AttachmentType.image,
+              _fileFilterChip(context.l10n.imageFiles, _fileTypeFilter == AttachmentType.image,
                   () {
                 setState(() => _fileTypeFilter = AttachmentType.image);
                 if (_query.isNotEmpty) _performSearch();
               }),
               const SizedBox(width: 6),
-              _fileFilterChip('Видео', _fileTypeFilter == AttachmentType.video,
+              _fileFilterChip(context.l10n.videoFiles, _fileTypeFilter == AttachmentType.video,
                   () {
                 setState(() => _fileTypeFilter = AttachmentType.video);
                 if (_query.isNotEmpty) _performSearch();
               }),
               const SizedBox(width: 6),
               _fileFilterChip(
-                  'Документы', _fileTypeFilter == AttachmentType.document, () {
+                  context.l10n.documentFiles, _fileTypeFilter == AttachmentType.document, () {
                 setState(() => _fileTypeFilter = AttachmentType.document);
                 if (_query.isNotEmpty) _performSearch();
               }),
@@ -376,7 +377,7 @@ class _SearchScreenState extends State<SearchScreen>
         const Divider(height: 1),
         Expanded(
           child: _fileResults.isEmpty
-              ? _noResults('Файлы не найдены')
+              ? _noResults(context.l10n.filesNotFound)
               : ListView.builder(
                   itemCount: _fileResults.length,
                   itemBuilder: (_, i) {

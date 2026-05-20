@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 import '../models.dart';
 import '../app_constants.dart';
+import '../l10n/app_localizations.dart';
 import '../services/chat_service.dart';
 import '../services/api_config.dart' show ApiConfig;
 import '../utils/app_snack.dart';
@@ -99,7 +100,7 @@ class _ChatSettingsScreenState extends State<ChatSettingsScreen> {
                 backgroundColor: Theme.of(context).colorScheme.primary,
                 child: Icon(Icons.camera_alt, color: Colors.white, size: 20),
               ),
-              title: const Text('Сделать фото'),
+              title: Text(context.l10n.takePhoto),
               onTap: () {
                 Navigator.pop(context);
                 _pickImage(ImageSource.camera);
@@ -110,7 +111,7 @@ class _ChatSettingsScreenState extends State<ChatSettingsScreen> {
                 backgroundColor: Theme.of(context).colorScheme.primary,
                 child: Icon(Icons.photo_library, color: Colors.white, size: 20),
               ),
-              title: const Text('Выбрать из галереи'),
+              title: Text(context.l10n.chooseGallery),
               onTap: () {
                 Navigator.pop(context);
                 _pickImage(ImageSource.gallery);
@@ -121,7 +122,7 @@ class _ChatSettingsScreenState extends State<ChatSettingsScreen> {
                 backgroundColor: Theme.of(context).colorScheme.primary,
                 child: Icon(Icons.gif, color: Colors.white, size: 20),
               ),
-              title: const Text('Выбрать GIF'),
+              title: Text(context.l10n.chooseGif),
               onTap: () {
                 Navigator.pop(context);
                 _pickGif();
@@ -133,8 +134,8 @@ class _ChatSettingsScreenState extends State<ChatSettingsScreen> {
                   backgroundColor: Color(0xFFEEEEEE),
                   child: Icon(Icons.delete_outline, color: Colors.red, size: 20),
                 ),
-                title: const Text('Удалить фото',
-                    style: TextStyle(color: Colors.red)),
+                title: Text(context.l10n.deletePhoto,
+                    style: const TextStyle(color: Colors.red)),
                 onTap: () {
                   Navigator.pop(context);
                   setState(() => _avatarPath = null);
@@ -199,8 +200,8 @@ class _ChatSettingsScreenState extends State<ChatSettingsScreen> {
               ),
               title: Text(
                 member.role == MemberRole.admin
-                    ? 'Снять роль администратора'
-                    : 'Назначить администратором',
+                    ? context.l10n.removeAdmin
+                    : context.l10n.makeAdmin,
               ),
               onTap: () {
                 Navigator.pop(context);
@@ -226,20 +227,19 @@ class _ChatSettingsScreenState extends State<ChatSettingsScreen> {
   /// После подтверждения удаляет чат через сервис и возвращает [true] —
   /// сигнал для [ChatScreen] закрыться и вернуться в список чатов.
   void _confirmDelete() {
-    final label = widget.chat.type == ChatType.community
-        ? 'сообщество'
-        : 'группу';
+    final l = context.l10n;
+    final title = widget.chat.type == ChatType.community
+        ? l.deleteCommunity
+        : l.deleteGroup;
     showDialog(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: Text('Удалить $label?'),
-        content: Text(
-          '«${widget.chat.name}» будет удалено навсегда вместе со всей перепиской.',
-        ),
+        title: Text(title),
+        content: Text(l.deleteChatForever(widget.chat.name)),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(ctx),
-            child: const Text('Отмена'),
+            child: Text(l.cancel),
           ),
           TextButton(
             onPressed: () async {
@@ -249,8 +249,7 @@ class _ChatSettingsScreenState extends State<ChatSettingsScreen> {
               // true — сигнал ChatScreen: вернуться в список чатов
               Navigator.pop(context, true);
             },
-            child: const Text('Удалить',
-                style: TextStyle(color: Colors.red)),
+            child: Text(l.delete, style: const TextStyle(color: Colors.red)),
           ),
         ],
       ),
@@ -259,23 +258,23 @@ class _ChatSettingsScreenState extends State<ChatSettingsScreen> {
 
   /// Подтверждение удаления участника через диалог.
   void _confirmRemove(ChatMember member) {
+    final l = context.l10n;
     showDialog(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Text('Удалить участника?'),
-        content: Text('«${member.name}» будет исключён из чата.'),
+        title: Text(l.removeMemberTitle),
+        content: Text(l.removeMemberDesc(member.name)),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(ctx),
-            child: const Text('Отмена'),
+            child: Text(l.cancel),
           ),
           TextButton(
             onPressed: () {
               Navigator.pop(ctx);
               setState(() => _members.remove(member));
             },
-            child: const Text('Удалить',
-                style: TextStyle(color: Colors.red)),
+            child: Text(l.delete, style: const TextStyle(color: Colors.red)),
           ),
         ],
       ),
@@ -285,7 +284,7 @@ class _ChatSettingsScreenState extends State<ChatSettingsScreen> {
   Future<void> _save() async {
     final name = _nameController.text.trim();
     if (name.isEmpty) {
-            AppSnack.info(context, 'Название не может быть пустым');
+            AppSnack.info(context, context.l10n.nameEmpty);
       return;
     }
 
@@ -368,13 +367,13 @@ class _ChatSettingsScreenState extends State<ChatSettingsScreen> {
     final cardColor = Theme.of(context).cardColor;
     final subtleColor = AppColors.subtle;
     final chatTypeName = switch (widget.chat.type) {
-      ChatType.direct    => 'Личный чат',
-      ChatType.group     => 'Группа',
-      ChatType.community => 'Сообщество',
+      ChatType.direct    => context.l10n.directChat,
+      ChatType.group     => context.l10n.groupType,
+      ChatType.community => context.l10n.communityType,
     };
     final memberLabel = widget.chat.type == ChatType.community
-        ? 'Подписчики'
-        : 'Участники';
+        ? context.l10n.subscribersLabel
+        : context.l10n.membersLabel;
 
     return Scaffold(
       body: CustomScrollView(
@@ -398,9 +397,9 @@ class _ChatSettingsScreenState extends State<ChatSettingsScreen> {
               else
                 TextButton(
                   onPressed: _save,
-                  child: const Text(
-                    'Сохранить',
-                    style: TextStyle(
+                  child: Text(
+                    context.l10n.save,
+                    style: const TextStyle(
                         color: Colors.white,
                         fontWeight: FontWeight.w600,
                         fontSize: 15),
@@ -477,14 +476,14 @@ class _ChatSettingsScreenState extends State<ChatSettingsScreen> {
                     _SettingsField(
                       controller: _nameController,
                       label: widget.chat.type == ChatType.direct
-                          ? 'Имя' : 'Название',
+                          ? context.l10n.nameLabel : context.l10n.chatNameLabel,
                       icon: Icons.edit_outlined,
                       onChanged: (_) => setState(() {}),
                     ),
                     const _CardDivider(),
                     _SettingsField(
                       controller: _descController,
-                      label: 'Описание',
+                      label: context.l10n.descriptionLabel,
                       icon: Icons.info_outline,
                       maxLines: 3,
                       maxLength: 200,
@@ -500,7 +499,7 @@ class _ChatSettingsScreenState extends State<ChatSettingsScreen> {
                         ChatType.group     => Icons.group_outlined,
                         ChatType.community => Icons.campaign_outlined,
                       },
-                      label: 'Тип',
+                      label: context.l10n.typeLabel,
                       value: chatTypeName,
                     ),
                   ]),
@@ -522,8 +521,8 @@ class _ChatSettingsScreenState extends State<ChatSettingsScreen> {
                               const SizedBox(width: 14),
                               Text(
                                 widget.chat.type == ChatType.community
-                                    ? 'Удалить сообщество'
-                                    : 'Удалить группу',
+                                    ? context.l10n.deleteCommunity
+                                    : context.l10n.deleteGroup,
                                 style: const TextStyle(
                                     color: Colors.red,
                                     fontSize: 15,
@@ -768,9 +767,9 @@ class _MemberRow extends StatelessWidget {
             // Бейдж роли
             if (member.role == MemberRole.creator)
               _RoleBadge(
-                  label: 'Создатель', color: Theme.of(context).colorScheme.primary)
+                  label: context.l10n.creatorRole, color: Theme.of(context).colorScheme.primary)
             else if (member.role == MemberRole.admin)
-              const _RoleBadge(label: 'Админ', color: Colors.blue),
+              _RoleBadge(label: context.l10n.adminRole, color: Colors.blue),
             // Кнопка удалить
             if (onRemove != null) ...[
               const SizedBox(width: 6),

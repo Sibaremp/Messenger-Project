@@ -5,6 +5,7 @@ import '../services/call_service.dart';
 import '../services/call_state.dart';
 import '../services/signaling_service.dart';
 import '../services/auth_service.dart';
+import '../l10n/app_localizations.dart';
 
 class CallScreen extends StatefulWidget {
   final String callId;
@@ -50,17 +51,34 @@ class CallScreen extends StatefulWidget {
     this.canSpeak = true,
   });
 
+  /// Завершает активный звонок (если есть) из любого места приложения.
+  /// Используется при принятии нового входящего звонка.
+  static Future<void> forceEndActive() => _CallScreenState.forceEndActive();
+
   @override
   State<CallScreen> createState() => _CallScreenState();
 }
 
 class _CallScreenState extends State<CallScreen>
     with SingleTickerProviderStateMixin {
+  // ── Глобальный трекер активного звонка ────────────────────────────────────
+  // Позволяет завершить предыдущий звонок при принятии нового.
+  static _CallScreenState? _activeInstance;
+
+  static Future<void> forceEndActive() async {
+    final inst = _activeInstance;
+    if (inst == null || !inst.mounted) return;
+    _activeInstance = null;
+    await inst._doEndCall(sendLeave: true);
+  }
+
   late final CallService _callService;
   CallStatus _status = CallStatus.idle;
   bool _isMuted = false;
   bool _isCameraOff = false;
   bool _isFrontCamera = true;
+  bool _isSpeaker = true;
+  bool _serviceDisposed = false;
 
   // Active participants in a group call
   final Map<String, String> _participants = {}; // userId → name
@@ -79,6 +97,7 @@ class _CallScreenState extends State<CallScreen>
   @override
   void initState() {
     super.initState();
+    _activeInstance = this;
     _fadeCtrl = AnimationController(
       vsync: this,
       duration: const Duration(milliseconds: 300),
@@ -121,8 +140,15 @@ class _CallScreenState extends State<CallScreen>
     _subs.add(widget.signalingService.onCallEnded.listen(_handleCallEnded));
     _subs.add(widget.signalingService.onParticipantJoined.listen(_handleParticipantJoined));
     _subs.add(widget.signalingService.onParticipantLeft.listen(_handleParticipantLeft));
+    _subs.add(widget.signalingService.onHubReconnected.listen(_handleHubReconnected));
     _subs.add(_callService.remoteStreams.listen(_handleRemoteStream));
     _subs.add(_callService.connectionStates.listen(_handleConnectionState));
+  }
+
+  void _handleHubReconnected(void _) {
+    // После реконнекта SignalR переподключаемся к группе звонка,
+    // чтобы снова получать ParticipantJoined / CallEnded / ICE события.
+    widget.signalingService.rejoinCall(widget.callId);
   }
 
   // ── Outgoing call ─────────────────────────────────────────────────────────
@@ -135,23 +161,16 @@ class _CallScreenState extends State<CallScreen>
     _log('startOutgoing callId=${widget.callId} peerId=${widget.peerId} isGroup=${widget.isGroup}');
 
     if (widget.isGroup) {
-      // Notify server; server sends IncomingCall to all participants
+      // Notify server; server sends IncomingCall to all participants.
+      // Participants are added to _participants only when they actually
+      // join via ParticipantJoined — not pre-populated here.
       await widget.signalingService.startCall(
         callId: widget.callId,
-        targetUserIds: [widget.peerId, ...widget.groupParticipantIds],
+        targetUserIds: widget.groupParticipantIds,
         isVideo: widget.isVideo,
         isGroup: true,
         chatId: widget.chatId,
       );
-      // Add known participants to local map
-      _participants[widget.peerId] = widget.peerName;
-      for (var i = 0; i < widget.groupParticipantIds.length; i++) {
-        final id = widget.groupParticipantIds[i];
-        _participants[id] =
-            i < widget.groupParticipantNames.length
-                ? widget.groupParticipantNames[i]
-                : id;
-      }
     } else {
       // 1-on-1: только уведомляем сервер. Offer будет отправлен в
       // _handleParticipantJoined, когда собеседник примет звонок и
@@ -179,10 +198,27 @@ class _CallScreenState extends State<CallScreen>
 
   // ── Signaling handlers ────────────────────────────────────────────────────
 
+  /// Возвращает имя участника по его userId, используя известные данные звонка.
+  String _resolveName(String userId) {
+    if (userId == widget.peerId) return widget.peerName;
+    final idx = widget.groupParticipantIds.indexOf(userId);
+    if (idx >= 0 && idx < widget.groupParticipantNames.length) {
+      return widget.groupParticipantNames[idx];
+    }
+    return userId;
+  }
+
   Future<void> _handleOffer(OfferData data) async {
     _log('handleOffer from=${data.fromUserId} callId=${data.callId} myCallId=${widget.callId}');
     if (data.callId != widget.callId) return;
     final fromId = data.fromUserId;
+
+    // Для группового звонка: добавляем отправителя оффера в список участников.
+    // Это нужно для входящего участника — сервер не шлёт ему ParticipantJoined
+    // для тех, кто уже был в звонке до его входа.
+    if (widget.isGroup && !_participants.containsKey(fromId)) {
+      setState(() => _participants[fromId] = _resolveName(fromId));
+    }
 
     // Подписываемся ДО initPeerConnection, чтобы не потерять ICE-кандидаты,
     // собранные во время createAnswer / setLocalDescription.
@@ -230,7 +266,7 @@ class _CallScreenState extends State<CallScreen>
     if (callId != widget.callId) return;
     if (mounted) {
       setState(() => _status = CallStatus.ended);
-      Future.delayed(const Duration(seconds: 2), _leaveScreen);
+      Future.delayed(const Duration(seconds: 2), () => _doEndCall(sendLeave: false));
     }
   }
 
@@ -241,7 +277,8 @@ class _CallScreenState extends State<CallScreen>
     _log('handleParticipantJoined myId=$myId — proceeding=${event.userId != myId}');
     if (event.userId == myId) return;
 
-    setState(() => _participants[event.userId] = event.name);
+    final name = event.name.isNotEmpty ? event.name : _resolveName(event.userId);
+    setState(() => _participants[event.userId] = name);
 
     // Подписываемся ДО initPeerConnection, чтобы не потерять ICE-кандидаты
     _subs.add(_callService.iceCandidates.listen((e) {
@@ -272,7 +309,7 @@ class _CallScreenState extends State<CallScreen>
     // (В группе один уход не прерывает сессию.)
     if (!widget.isGroup) {
       setState(() => _status = CallStatus.ended);
-      Future.delayed(const Duration(seconds: 1), _leaveScreen);
+      Future.delayed(const Duration(seconds: 1), () => _doEndCall(sendLeave: false));
     }
   }
 
@@ -318,15 +355,75 @@ class _CallScreenState extends State<CallScreen>
     setState(() => _isFrontCamera = _callService.isFrontCamera);
   }
 
-  Future<void> _endCall() async {
-    await widget.signalingService.leaveCall(widget.callId);
-    setState(() => _status = CallStatus.ended);
-    await _leaveScreen();
+  Future<void> _toggleSpeaker() async {
+    // На мобильных — переключаем динамик/трубку
+    // На десктопе — показываем выбор аудиовыхода
+    final devices = await _callService.getAudioOutputDevices();
+    if (devices.length > 1) {
+      if (!mounted) return;
+      final picked = await showModalBottomSheet<String>(
+        context: context,
+        backgroundColor: const Color(0xFF1E2533),
+        shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+        ),
+        builder: (ctx) => Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Padding(
+              padding: const EdgeInsets.all(16),
+              child: Text(
+                context.l10n.selectAudioOutput,
+                style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 16,
+                    fontWeight: FontWeight.w600),
+              ),
+            ),
+            ...devices.map((d) => ListTile(
+                  leading: const Icon(Icons.speaker, color: Colors.white70),
+                  title: Text(
+                    d.label.isNotEmpty ? d.label : d.deviceId,
+                    style: const TextStyle(color: Colors.white),
+                  ),
+                  onTap: () => Navigator.of(ctx).pop(d.deviceId),
+                )),
+            const SizedBox(height: 8),
+          ],
+        ),
+      );
+      if (picked != null) {
+        await _callService.selectAudioOutput(picked);
+        setState(() => _isSpeaker = _callService.isSpeaker);
+      }
+    } else {
+      // Мобильные или одно устройство — простой toggle
+      await _callService.toggleSpeaker();
+      setState(() => _isSpeaker = _callService.isSpeaker);
+    }
   }
 
-  Future<void> _leaveScreen() async {
-    if (mounted) Navigator.of(context).pop();
+  /// Завершает звонок: опционально отправляет LeaveCall серверу,
+  /// освобождает ресурсы и закрывает экран.
+  Future<void> _doEndCall({bool sendLeave = true}) async {
+    if (_serviceDisposed) return;
+    _serviceDisposed = true;
+    if (identical(_activeInstance, this)) _activeInstance = null;
+    _callTimer?.cancel();
+    for (final s in _subs) {
+      s.cancel();
+    }
+    if (sendLeave) {
+      await widget.signalingService.leaveCall(widget.callId);
+    }
+    _callService.dispose();
+    if (mounted) {
+      setState(() => _status = CallStatus.ended);
+      Navigator.of(context).pop();
+    }
   }
+
+  Future<void> _endCall() => _doEndCall(sendLeave: true);
 
   void _resetControlsTimer() {
     _controlsTimer?.cancel();
@@ -350,24 +447,31 @@ class _CallScreenState extends State<CallScreen>
     return '$m:$s';
   }
 
-  String get _statusLabel => switch (_status) {
-        CallStatus.calling   => 'Исходящий…',
-        CallStatus.ringing   => 'Подключение…',
-        CallStatus.connected => _timerLabel,
-        CallStatus.ended     => 'Звонок завершён',
-        CallStatus.failed    => 'Нет соединения',
-        _                    => '',
-      };
+  String _statusLabel(BuildContext context) {
+    final l = context.l10n;
+    return switch (_status) {
+      CallStatus.calling   => l.outgoing,
+      CallStatus.ringing   => l.connecting,
+      CallStatus.connected => _timerLabel,
+      CallStatus.ended     => l.callEnded,
+      CallStatus.failed    => l.noConnection,
+      _                    => '',
+    };
+  }
 
   @override
   void dispose() {
     _callTimer?.cancel();
     _controlsTimer?.cancel();
     _fadeCtrl.dispose();
-    for (final s in _subs) {
-      s.cancel();
+    if (!_serviceDisposed) {
+      _serviceDisposed = true;
+      for (final s in _subs) {
+        s.cancel();
+      }
+      _callService.dispose();
     }
-    _callService.dispose();
+    if (identical(_activeInstance, this)) _activeInstance = null;
     super.dispose();
   }
 
@@ -375,7 +479,23 @@ class _CallScreenState extends State<CallScreen>
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
+    final callActive = _status == CallStatus.calling ||
+        _status == CallStatus.ringing ||
+        _status == CallStatus.connected;
+    return PopScope(
+      // Блокируем системную кнопку «Назад» во время активного звонка
+      canPop: !callActive,
+      onPopInvokedWithResult: (didPop, _) {
+        if (!didPop && callActive) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text(context.l10n.endCallToExit),
+              duration: const Duration(seconds: 2),
+            ),
+          );
+        }
+      },
+      child: Scaffold(
       backgroundColor: Colors.black,
       body: GestureDetector(
         onTap: widget.isVideo ? _resetControlsTimer : null,
@@ -395,7 +515,8 @@ class _CallScreenState extends State<CallScreen>
           ],
         ),
       ),
-    );
+      ),  // Scaffold
+    );  // PopScope
   }
 
   Widget _buildMainContent() {
@@ -419,7 +540,7 @@ class _CallScreenState extends State<CallScreen>
   Widget _buildAvatarBackground() {
     final showStatus = _status != CallStatus.connected;
     // Для группового звонка показываем нейтральный аватар и "Групповой звонок"
-    final displayName = widget.isGroup ? 'Групповой звонок' : widget.peerName;
+    final displayName = widget.isGroup ? context.l10n.groupCall : widget.peerName;
     final avatarLetter = widget.isGroup ? '👥' : (widget.peerName.isNotEmpty
         ? widget.peerName[0].toUpperCase()
         : '?');
@@ -463,8 +584,7 @@ class _CallScreenState extends State<CallScreen>
                         ? const Color(0xFF1565C0)
                         : const Color(0xFF0F3460),
                     child: widget.isGroup
-                        ? const Text('👥',
-                            style: TextStyle(fontSize: 44))
+                        ? const Icon(Icons.group, size: 44, color: Colors.white)
                         : Text(
                             avatarLetter,
                             style: const TextStyle(
@@ -494,7 +614,7 @@ class _CallScreenState extends State<CallScreen>
                       const SizedBox(width: 6),
                     ],
                     Text(
-                      _statusLabel,
+                      _statusLabel(context),
                       style: TextStyle(
                           color: Colors.white.withValues(alpha: 0.7),
                           fontSize: 16),
@@ -532,14 +652,14 @@ class _CallScreenState extends State<CallScreen>
                     borderRadius: BorderRadius.circular(20),
                     border: Border.all(color: Colors.orange.withValues(alpha: 0.4)),
                   ),
-                  child: const Row(
+                  child: Row(
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                      Icon(Icons.mic_off, color: Colors.orange, size: 16),
-                      SizedBox(width: 6),
+                      const Icon(Icons.mic_off, color: Colors.orange, size: 16),
+                      const SizedBox(width: 6),
                       Text(
-                        'Только прослушивание',
-                        style: TextStyle(color: Colors.orange, fontSize: 13),
+                        context.l10n.listenOnly,
+                        style: const TextStyle(color: Colors.orange, fontSize: 13),
                       ),
                     ],
                   ),
@@ -555,55 +675,78 @@ class _CallScreenState extends State<CallScreen>
   Widget _buildGroupGrid() {
     final peers = _participants.keys.toList();
     return Positioned.fill(
-      child: GridView.builder(
-        physics: const NeverScrollableScrollPhysics(),
-        padding: EdgeInsets.zero,
-        gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-          crossAxisCount: peers.length == 1 ? 1 : 2,
-        ),
-        itemCount: peers.length,
-        itemBuilder: (_, i) {
-          final peerId = peers[i];
-          final name = _participants[peerId] ?? peerId;
-          final renderer = _callService.remoteRenderers[peerId];
-          return Stack(
-            fit: StackFit.expand,
-            children: [
-              if (renderer != null && widget.isVideo)
-                RTCVideoView(renderer,
-                    objectFit:
-                        RTCVideoViewObjectFit.RTCVideoViewObjectFitContain)
-              else
-                Container(
-                  color: Colors.blueGrey[900],
-                  child: Center(
-                    child: CircleAvatar(
-                      radius: 32,
-                      backgroundColor: Colors.blueGrey[700],
-                      child: Text(name.isNotEmpty ? name[0].toUpperCase() : '?',
+      child: LayoutBuilder(
+        builder: (_, constraints) {
+          final count = peers.length;
+          final cols = count == 1 ? 1 : 2;
+          final rows = (count / cols).ceil();
+          final cellW = constraints.maxWidth / cols;
+          final cellH = constraints.maxHeight / rows;
+          return GridView.builder(
+            physics: const NeverScrollableScrollPhysics(),
+            padding: EdgeInsets.zero,
+            gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+              crossAxisCount: cols,
+              childAspectRatio: cellW / cellH,
+            ),
+            itemCount: count,
+            itemBuilder: (_, i) {
+              final peerId = peers[i];
+              final name = _participants[peerId] ?? peerId;
+              final renderer = _callService.remoteRenderers[peerId];
+              return Stack(
+                fit: StackFit.expand,
+                children: [
+                  if (renderer != null && widget.isVideo)
+                    RTCVideoView(renderer,
+                        objectFit:
+                            RTCVideoViewObjectFit.RTCVideoViewObjectFitContain)
+                  else
+                    Container(
+                      color: Colors.blueGrey[900],
+                      child: Center(
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            CircleAvatar(
+                              radius: 36,
+                              backgroundColor: Colors.blueGrey[700],
+                              child: Text(
+                                name.isNotEmpty ? name[0].toUpperCase() : '?',
+                                style: const TextStyle(
+                                    color: Colors.white,
+                                    fontSize: 30,
+                                    fontWeight: FontWeight.w600),
+                              ),
+                            ),
+                            const SizedBox(height: 10),
+                            Text(
+                              name,
+                              style: const TextStyle(
+                                  color: Colors.white70, fontSize: 14),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  Positioned(
+                    bottom: 8,
+                    left: 8,
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 8, vertical: 4),
+                      decoration: BoxDecoration(
+                        color: Colors.black54,
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: Text(name,
                           style: const TextStyle(
-                              color: Colors.white,
-                              fontSize: 28,
-                              fontWeight: FontWeight.w600)),
+                              color: Colors.white, fontSize: 13)),
                     ),
                   ),
-                ),
-              Positioned(
-                bottom: 8,
-                left: 8,
-                child: Container(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                  decoration: BoxDecoration(
-                    color: Colors.black54,
-                    borderRadius: BorderRadius.circular(8),
-                  ),
-                  child: Text(name,
-                      style: const TextStyle(
-                          color: Colors.white, fontSize: 13)),
-                ),
-              ),
-            ],
+                ],
+              );
+            },
           );
         },
       ),
@@ -681,7 +824,20 @@ class _CallScreenState extends State<CallScreen>
               IconButton(
                 icon: const Icon(Icons.arrow_back_ios,
                     color: Colors.white, size: 20),
-                onPressed: () => Navigator.of(context).maybePop(),
+                onPressed: () {
+                  if (_status == CallStatus.calling ||
+                      _status == CallStatus.ringing ||
+                      _status == CallStatus.connected) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(
+                        content: Text(context.l10n.endCallToExit),
+                        duration: const Duration(seconds: 2),
+                      ),
+                    );
+                  } else {
+                    Navigator.of(context).maybePop();
+                  }
+                },
               ),
               const SizedBox(width: 4),
               Expanded(
@@ -689,13 +845,13 @@ class _CallScreenState extends State<CallScreen>
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text(
-                      widget.isGroup ? 'Групповой звонок' : widget.peerName,
+                      widget.isGroup ? context.l10n.groupCall : widget.peerName,
                       style: const TextStyle(
                           color: Colors.white,
                           fontSize: 18,
                           fontWeight: FontWeight.w600),
                     ),
-                    if (_statusLabel.isNotEmpty)
+                    if (_statusLabel(context).isNotEmpty)
                       Row(
                         mainAxisSize: MainAxisSize.min,
                         children: [
@@ -712,7 +868,7 @@ class _CallScreenState extends State<CallScreen>
                             ),
                           ],
                           Text(
-                            _statusLabel,
+                            _statusLabel(context),
                             style: TextStyle(
                                 color: _status == CallStatus.connected
                                     ? Colors.white
@@ -734,9 +890,16 @@ class _CallScreenState extends State<CallScreen>
                     color: Colors.white12,
                     borderRadius: BorderRadius.circular(12),
                   ),
-                  child: Text(
-                    '👥 ${_participants.length + 1}',
-                    style: const TextStyle(color: Colors.white70, fontSize: 13),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const Icon(Icons.group, size: 14, color: Colors.white70),
+                      const SizedBox(width: 4),
+                      Text(
+                        '${_participants.length + 1}',
+                        style: const TextStyle(color: Colors.white70, fontSize: 13),
+                      ),
+                    ],
                   ),
                 ),
             ],
@@ -770,25 +933,31 @@ class _CallScreenState extends State<CallScreen>
             children: [
               // Микрофон: заблокирован если !canSpeak
               Tooltip(
-                message: !widget.canSpeak ? 'В сообществе говорить могут только администраторы' : '',
+                message: !widget.canSpeak ? context.l10n.adminOnlySpeak : '',
                 child: _ControlButton(
                   icon: _isMuted ? Icons.mic_off : Icons.mic,
-                  label: _isMuted ? 'Вкл. мик.' : 'Выкл. мик.',
+                  label: _isMuted ? context.l10n.unmuteMic : context.l10n.muteMic,
                   onTap: widget.canSpeak ? _toggleMute : () {},
                   active: _isMuted,
                   locked: !widget.canSpeak,
                 ),
               ),
+              _ControlButton(
+                icon: _isSpeaker ? Icons.volume_up : Icons.volume_off,
+                label: _isSpeaker ? context.l10n.speakerOn : context.l10n.speakerOff,
+                onTap: _toggleSpeaker,
+                active: !_isSpeaker,
+              ),
               if (widget.isVideo) ...[
                 _ControlButton(
                   icon: _isCameraOff ? Icons.videocam_off : Icons.videocam,
-                  label: _isCameraOff ? 'Вкл. камеру' : 'Выкл. камеру',
+                  label: _isCameraOff ? context.l10n.cameraOn : context.l10n.cameraOff,
                   onTap: _toggleCamera,
                   active: _isCameraOff,
                 ),
                 _ControlButton(
                   icon: Icons.flip_camera_ios,
-                  label: 'Перевернуть',
+                  label: context.l10n.flipCamera,
                   onTap: _switchCamera,
                 ),
               ],
@@ -929,8 +1098,8 @@ class _EndCallButton extends StatelessWidget {
             child: const Icon(Icons.call_end, color: Colors.white, size: 30),
           ),
           const SizedBox(height: 6),
-          const Text('Завершить',
-              style: TextStyle(color: Colors.white70, fontSize: 11)),
+          Text(context.l10n.endCall,
+              style: const TextStyle(color: Colors.white70, fontSize: 11)),
         ],
       ),
     );
@@ -979,9 +1148,10 @@ class _IncomingCallOverlayState extends State<IncomingCallOverlay>
     final name = widget.callInfo.callerName;
     final isVideo = widget.callInfo.isVideo;
     final isGroup = widget.callInfo.isGroup;
+    final l = context.l10n;
     final callTypeLabel = isGroup
-        ? 'Групповой ${isVideo ? 'видео' : 'аудио'}звонок'
-        : 'Входящий ${isVideo ? 'видео' : 'аудио'}звонок';
+        ? (isVideo ? l.groupVideoCall : l.groupAudioCall)
+        : (isVideo ? l.incomingVideoCall : l.incomingAudioCall);
 
     return Material(
       color: Colors.transparent,
@@ -1033,7 +1203,7 @@ class _IncomingCallOverlayState extends State<IncomingCallOverlay>
                       ? const Color(0xFF1565C0)
                       : const Color(0xFF0F3460),
                   child: isGroup
-                      ? const Text('👥', style: TextStyle(fontSize: 40))
+                      ? const Icon(Icons.group, size: 40, color: Colors.white)
                       : Text(
                           name.isNotEmpty ? name[0].toUpperCase() : '?',
                           style: const TextStyle(
@@ -1092,13 +1262,13 @@ class _IncomingCallOverlayState extends State<IncomingCallOverlay>
                     _RingButton(
                       icon: Icons.call_end,
                       color: const Color(0xFFE53935),
-                      label: 'Отклонить',
+                      label: l.declineCall,
                       onTap: widget.onDecline,
                     ),
                     _RingButton(
                       icon: isVideo ? Icons.videocam : Icons.call,
                       color: const Color(0xFF43A047),
-                      label: 'Принять',
+                      label: l.accept,
                       onTap: widget.onAccept,
                     ),
                   ],

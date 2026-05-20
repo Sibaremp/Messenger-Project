@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:http/http.dart' as http;
 import 'package:http_parser/http_parser.dart' show MediaType;
 import 'package:signalr_netcore/signalr_client.dart';
+import 'package:signalr_netcore/itransport.dart' show HttpTransportType;
 import '../models.dart';
 import 'api_config.dart';
 import 'auth_service.dart';
@@ -92,8 +93,11 @@ class ApiChatService implements ChatService {
             ApiConfig.hubUrl,
             options: HttpConnectionOptions(
               accessTokenFactory: () async => _auth.token ?? '',
+              transport: HttpTransportType.WebSockets,
+              skipNegotiation: true,
             ),
           )
+          .withAutomaticReconnect()
           .build();
 
       _hub!.on('ReceiveEvent', _onHubEvent);
@@ -311,7 +315,7 @@ class ApiChatService implements ChatService {
       throw ApiException('Файл не найден: ${src.path}', 0);
     }
     final req = http.MultipartRequest('POST', Uri.parse('$_base/files/upload'))
-      ..headers['Authorization'] = _headers['Authorization'] ?? ''
+      ..headers.addAll(_headers)
       ..files.add(await http.MultipartFile.fromPath(
         'file', file.path,
         filename: src.fileName,
@@ -362,7 +366,7 @@ class ApiChatService implements ChatService {
     final req = http.MultipartRequest(
       'POST', Uri.parse(ApiConfig.audioUploadUrl),
     )
-      ..headers['Authorization'] = _headers['Authorization'] ?? ''
+      ..headers.addAll(_headers)
       ..files.add(await http.MultipartFile.fromPath(
         'file', file.path,
         filename: src.fileName,
@@ -492,7 +496,7 @@ class ApiChatService implements ChatService {
     final req = http.MultipartRequest(
       'POST', Uri.parse('$_base/chats/$chatId/avatar'),
     )
-      ..headers['Authorization'] = _headers['Authorization'] ?? ''
+      ..headers.addAll(_headers)
       ..files.add(await http.MultipartFile.fromPath('file', file.path));
     final streamed = await req.send().timeout(const Duration(minutes: 5));
     final resp = await http.Response.fromStream(streamed);

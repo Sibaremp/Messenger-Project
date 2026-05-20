@@ -484,10 +484,13 @@ class NotificationService {
 
   static String _formatBody(NotificationPayload p) {
     final sender = p.senderName;
-    final text   = p.body ?? '';
+    // Если сервер передал тип вложения — используем читаемую метку.
+    // В противном случае берём text из тела (сервер уже подставил нужный текст).
+    final text = p.body ?? '';
     if (sender != null && sender.isNotEmpty) return '$sender: $text';
     return text;
   }
+
 }
 
 // ── Background tap handler (top-level, required by flutter_local_notifications) ─

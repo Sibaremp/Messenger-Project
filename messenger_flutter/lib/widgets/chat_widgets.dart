@@ -10,7 +10,6 @@ import 'package:open_filex/open_filex.dart';
 import 'package:media_kit/media_kit.dart';
 import 'package:media_kit_video/media_kit_video.dart';
 import 'package:video_player/video_player.dart';
-import 'package:path_provider/path_provider.dart';
 import '../models.dart';
 import '../app_constants.dart';
 import '../services/api_config.dart' show ApiConfig;
@@ -24,6 +23,7 @@ import '../services/audio_service.dart';
 import 'audio_message_bubble.dart';
 import '../utils/profanity_filter.dart';
 import '../utils/app_snack.dart';
+import '../services/media_save_service.dart';
 
 // ─── Аватар ───────────────────────────────────────────────────────────────────
 
@@ -1435,56 +1435,113 @@ String _commentSuffix(int n) {
   return 'ев';
 }
 
-/// Сохраняет вложение в папку по выбору пользователя.
+/// Показывает выбор способа сохранения: «Сохранить» (в папку CaspianMessenger)
+/// или «Сохранить как…» (выбор папки вручную).
 /// Используется в чате, комментариях и просмотрщике медиа.
-Future<void> saveAttachmentToFolder(BuildContext context, Attachment att) async {
+Future<void> showSaveOptions(BuildContext context, Attachment att) async {
   if (kIsWeb) return;
-
-  String? destDir;
-  try {
-    destDir = await FilePicker.platform.getDirectoryPath(
-      dialogTitle: 'Выберите папку для сохранения',
-    );
-  } catch (_) {
-    // Fallback: если picker недоступен — берём стандартные папки
-    if (Platform.isAndroid) {
-      destDir = '/storage/emulated/0/Download';
-    } else if (Platform.isIOS) {
-      destDir = (await getApplicationDocumentsDirectory()).path;
-    }
+  final result = await showModalBottomSheet<String>(
+    context: context,
+    shape: const RoundedRectangleBorder(
+      borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+    ),
+    builder: (sheetCtx) => SafeArea(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const SizedBox(height: 8),
+          Container(
+            width: 40, height: 4,
+            decoration: BoxDecoration(
+              color: Colors.grey[400],
+              borderRadius: BorderRadius.circular(2),
+            ),
+          ),
+          const SizedBox(height: 4),
+          ListTile(
+            leading: const Icon(Icons.download_done_outlined),
+            title: const Text('Сохранить'),
+            subtitle: const Text('В папку CaspianMessenger'),
+            onTap: () => Navigator.pop(sheetCtx, 'save'),
+          ),
+          ListTile(
+            leading: const Icon(Icons.folder_open_outlined),
+            title: const Text('Сохранить как…'),
+            subtitle: const Text('Выбрать папку вручную'),
+            onTap: () => Navigator.pop(sheetCtx, 'save_as'),
+          ),
+          const SizedBox(height: 8),
+        ],
+      ),
+    ),
+  );
+  if (!context.mounted) return;
+  if (result == 'save') {
+    await _saveAttachmentDefault(context, att);
+  } else if (result == 'save_as') {
+    await _saveAttachmentAs(context, att);
   }
-  if (destDir == null) return; // пользователь отменил
+}
 
-  final fileName = att.fileName;
-  final destPath = '$destDir${Platform.pathSeparator}$fileName';
+/// Быстрое сохранение в папку CaspianMessenger без диалога.
+Future<void> _saveAttachmentDefault(BuildContext context, Attachment att) async {
+  try {
+    await MediaSaveService.instance.saveToDefaultFolder(att);
+    if (!context.mounted) return;
+    AppSnack.success(context, 'Сохранено в папку CaspianMessenger');
+  } catch (e) {
+    if (!context.mounted) return;
+    AppSnack.error(context, 'Ошибка сохранения: $e');
+  }
+}
+
+/// Сохранение с выбором папки через системный диалог.
+Future<void> _saveAttachmentAs(BuildContext context, Attachment att) async {
+  if (kIsWeb) return;
+  String? destPath;
+  try {
+    if (!Platform.isAndroid && !Platform.isIOS) {
+      // Desktop: нативный диалог «Сохранить как»
+      destPath = await FilePicker.platform.saveFile(
+        dialogTitle: 'Сохранить как',
+        fileName: att.fileName,
+      );
+    } else {
+      // Mobile: выбираем папку, имя файла оставляем оригинальное
+      final dir = await FilePicker.platform.getDirectoryPath(
+        dialogTitle: 'Выберите папку для сохранения',
+      );
+      if (dir != null) destPath = '$dir${Platform.pathSeparator}${att.fileName}';
+    }
+  } catch (_) {
+    // FilePicker недоступен — используем папку по умолчанию
+    destPath = null;
+  }
+  if (destPath == null) return; // пользователь отменил
 
   try {
+    final destDir = File(destPath).parent.path;
     await Directory(destDir).create(recursive: true);
 
     if (ApiConfig.isServerMediaPath(att.path)) {
-      // Проверяем кэш
       final cached = await FileDownloadService.instance.getLocalPathIfExists(att.path);
       if (cached != null) {
         await File(cached).copy(destPath);
       } else {
-        // Скачиваем с сервера прямо в выбранную папку
         final url = ApiConfig.resolveMediaUrl(att.path)!;
         final response = await http.get(Uri.parse(url));
-        if (response.statusCode != 200) {
-          throw Exception('HTTP ${response.statusCode}');
-        }
+        if (response.statusCode != 200) throw Exception('HTTP ${response.statusCode}');
         await File(destPath).writeAsBytes(response.bodyBytes);
       }
     } else {
-      // Локальный файл — просто копируем
       await File(att.path).copy(destPath);
     }
 
     if (!context.mounted) return;
-        AppSnack.success(context, 'Сохранено: $fileName');
+    AppSnack.success(context, 'Сохранено: ${att.fileName}');
   } catch (e) {
     if (!context.mounted) return;
-        AppSnack.error(context, 'Ошибка сохранения: $e');
+    AppSnack.error(context, 'Ошибка сохранения: $e');
   }
 }
 
@@ -2018,12 +2075,22 @@ class _DocumentPreviewState extends State<_DocumentPreview> {
               ),
             ),
           SimpleDialogOption(
-            onPressed: () => Navigator.pop(ctx, 'save'),
+            onPressed: () => Navigator.pop(ctx, 'save_default'),
             child: Row(
               children: [
-                Icon(Icons.download, size: 20, color: Theme.of(context).colorScheme.primary),
-                SizedBox(width: 12),
-                Text('Сохранить в папку'),
+                Icon(Icons.download_done_outlined, size: 20, color: Theme.of(context).colorScheme.primary),
+                const SizedBox(width: 12),
+                const Text('Сохранить'),
+              ],
+            ),
+          ),
+          SimpleDialogOption(
+            onPressed: () => Navigator.pop(ctx, 'save_as'),
+            child: Row(
+              children: [
+                Icon(Icons.folder_open_outlined, size: 20, color: Theme.of(context).colorScheme.primary),
+                const SizedBox(width: 12),
+                const Text('Сохранить как…'),
               ],
             ),
           ),
@@ -2052,8 +2119,10 @@ class _DocumentPreviewState extends State<_DocumentPreview> {
       await OpenFilex.open(path);
     } else if (action == 'share' && path != null) {
       await Share.shareXFiles([XFile(path)]);
-    } else if (action == 'save') {
-      await saveAttachmentToFolder(context, widget.attachment);
+    } else if (action == 'save_default') {
+      await _saveAttachmentDefault(context, widget.attachment);
+    } else if (action == 'save_as') {
+      await _saveAttachmentAs(context, widget.attachment);
     } else if (action == 'delete') {
       await FileDownloadService.instance.removeLocal(widget.attachment.path);
     }
@@ -2097,7 +2166,6 @@ class _DocumentPreviewState extends State<_DocumentPreview> {
       case DownloadState.failed:
         return Icon(Icons.refresh, color: color, size: size);
     }
-    return Icon(_iconForFile(widget.attachment.fileName), color: color, size: size);
   }
 
   String? _buildSubtitle() {
@@ -2173,12 +2241,12 @@ class _DocumentPreviewState extends State<_DocumentPreview> {
                 ],
               ),
             ),
-            // Кнопка сохранения в папку (только для не-web)
+            // Кнопка сохранения (только для не-web, файл уже скачан)
             if (_isRemote && !kIsWeb &&
-                _progress.state != DownloadState.downloading) ...[
+                _progress.state == DownloadState.completed) ...[
               const SizedBox(width: 4),
               GestureDetector(
-                onTap: () => saveAttachmentToFolder(context, widget.attachment),
+                onTap: () => showSaveOptions(context, widget.attachment),
                 child: Padding(
                   padding: const EdgeInsets.all(4),
                   child: Icon(Icons.save_alt, size: 18, color: subtleColor),
@@ -3873,7 +3941,7 @@ class _MediaViewerScreenState extends State<MediaViewerScreen>
             IconButton(
               icon: const Icon(Icons.download, color: Colors.white70),
               tooltip: 'Сохранить',
-              onPressed: () => saveAttachmentToFolder(context, _att),
+              onPressed: () => showSaveOptions(context, _att),
             ),
         ],
       ),

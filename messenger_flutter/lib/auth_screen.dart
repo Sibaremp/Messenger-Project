@@ -4,6 +4,7 @@ import 'services/sim_service.dart';
 import 'services/auth_service.dart' as svc;
 import 'theme.dart' show ThemeProvider, AppThemeMode;
 import 'utils/app_snack.dart';
+import 'l10n/app_localizations.dart';
 
 // ─── AuthGate — точка входа в приложение ─────────────────────────────────────
 //
@@ -63,9 +64,11 @@ class _AuthScreenState extends State<AuthScreen>
 
   @override
   Widget build(BuildContext context) {
-    final cardColor = Theme.of(context).cardColor;
-    final subtleColor = Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.55);
-    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final theme = Theme.of(context);
+    final cardColor = theme.cardColor;
+    final accent = theme.colorScheme.primary;
+    final subtleColor = theme.colorScheme.onSurface.withValues(alpha: 0.55);
+    final isDark = theme.brightness == Brightness.dark;
     final screenW = MediaQuery.of(context).size.width;
     final isDesktop = screenW > 600;
 
@@ -97,7 +100,7 @@ class _AuthScreenState extends State<AuthScreen>
                       ),
                       const SizedBox(height: 8),
                       Text(
-                        'Войдите или создайте аккаунт',
+                        context.l10n.loginSubtitle,
                         style: TextStyle(fontSize: 14, color: subtleColor),
                       ),
                       const SizedBox(height: 24),
@@ -113,20 +116,20 @@ class _AuthScreenState extends State<AuthScreen>
                               child: TabBar(
                                 controller: _tabController,
                                 indicator: BoxDecoration(
-                                  color: const Color(0xFFD4765B),
+                                  color: accent,
                                   borderRadius: BorderRadius.circular(10),
                                 ),
                                 indicatorSize: TabBarIndicatorSize.tab,
                                 labelColor: Colors.white,
-                                unselectedLabelColor: const Color(0xFF757575),
+                                unselectedLabelColor: subtleColor,
                                 labelStyle: const TextStyle(
                                   fontWeight: FontWeight.w600,
                                   fontSize: 14,
                                 ),
                                 dividerColor: Colors.transparent,
-                                tabs: const [
-                                  Tab(text: 'Вход'),
-                                  Tab(text: 'Регистрация'),
+                                tabs: [
+                                  Tab(text: context.l10n.loginTitle),
+                                  Tab(text: context.l10n.registerTitle),
                                 ],
                               ),
                             ),
@@ -148,7 +151,7 @@ class _AuthScreenState extends State<AuthScreen>
                               ),
                               child: Icon(
                                 isDark ? Icons.light_mode_outlined : Icons.dark_mode_outlined,
-                                color: const Color(0xFFD4765B),
+                                color: accent,
                                 size: 22,
                               ),
                             ),
@@ -246,7 +249,7 @@ class _LoginFormState extends State<_LoginForm> {
     } catch (e) {
       if (!mounted) return;
       setState(() => _isLoading = false);
-      _snack('Ошибка подключения к серверу', color: Colors.red[700]);
+      _snack(context.l10n.connectionError, color: Colors.red[700]);
     }
   }
 
@@ -258,15 +261,15 @@ class _LoginFormState extends State<_LoginForm> {
         children: [
           _AuthField(
             controller: _loginController,
-            label: 'Имя пользователя',
+            label: context.l10n.username,
             icon: Icons.person_outline,
             validator: (v) =>
-                (v == null || v.trim().isEmpty) ? 'Введите имя' : null,
+                (v == null || v.trim().isEmpty) ? context.l10n.enterUsername : null,
           ),
           const SizedBox(height: 16),
           _AuthField(
             controller: _passwordController,
-            label: 'Пароль',
+            label: context.l10n.password,
             icon: Icons.lock_outline,
             obscureText: _obscurePassword,
             suffixIcon: _VisibilityButton(
@@ -274,11 +277,11 @@ class _LoginFormState extends State<_LoginForm> {
               onTap: () =>
                   setState(() => _obscurePassword = !_obscurePassword),
             ),
-            validator: _validatePassword,
+            validator: (v) => _validatePasswordL10n(context, v),
           ),
           const SizedBox(height: 24),
           _AuthButton(
-            label: 'Войти',
+            label: context.l10n.signIn,
             isLoading: _isLoading,
             onPressed: _submit,
           ),
@@ -398,13 +401,13 @@ class _RegisterFormState extends State<_RegisterForm> {
       setState(() {
         _groups       = g;
         _groupsLoading = false;
-        if (g.isEmpty) _groupsError = 'Список групп пуст';
+        if (g.isEmpty) _groupsError = context.l10n.groupNotFound;
       });
     } catch (_) {
       if (!mounted) return;
       setState(() {
         _groupsLoading = false;
-        _groupsError   = 'Не удалось загрузить группы. Проверьте подключение.';
+        _groupsError   = context.l10n.groupsLoadError;
       });
     }
   }
@@ -427,11 +430,11 @@ class _RegisterFormState extends State<_RegisterForm> {
         _people         = list;
         _filteredPeople = list;
         _peopleLoading  = false;
-        if (list.isEmpty) _peopleError = 'Список пуст';
+        if (list.isEmpty) _peopleError = context.l10n.noData;
       });
     } catch (_) {
       if (!mounted) return;
-      setState(() { _peopleLoading = false; _peopleError = 'Ошибка загрузки'; });
+      setState(() { _peopleLoading = false; _peopleError = context.l10n.peopleLoadError; });
     }
   }
 
@@ -478,10 +481,10 @@ class _RegisterFormState extends State<_RegisterForm> {
   // ── Юридические документы ─────────────────────────────────────────────────
 
   void _showTermsSheet() =>
-      _showLegalSheet('Пользовательское соглашение', _kTermsSections);
+      _showLegalSheet(context.l10n.termsCheckbox, _kTermsSections);
 
   void _showPrivacySheet() =>
-      _showLegalSheet('Политика конфиденциальности', _kPrivacySections);
+      _showLegalSheet(context.l10n.privacyTitle, _kPrivacySections);
 
   void _showLegalSheet(String title, List<_LegalSection> sections) {
     showModalBottomSheet<void>(
@@ -497,10 +500,7 @@ class _RegisterFormState extends State<_RegisterForm> {
 
   Future<void> _submit() async {
     if (!_acceptedTerms || !_acceptedPrivacy) {
-      _snack(
-        'Необходимо принять пользовательское соглашение и политику конфиденциальности',
-        color: Colors.red[700],
-      );
+      _snack(context.l10n.acceptTerms, color: Colors.red[700]);
       return;
     }
     if (!_formKey.currentState!.validate()) return;
@@ -517,7 +517,7 @@ class _RegisterFormState extends State<_RegisterForm> {
       if (!mounted) return;
       setState(() => _isSubmitting = false);
       widget.tabController.animateTo(0);
-      _snack('Аккаунт создан! Теперь войдите.', color: const Color(0xFFD4765B));
+      _snack(context.l10n.accountCreated);
     } on svc.AuthException catch (e) {
       if (!mounted) return;
       setState(() => _isSubmitting = false);
@@ -525,7 +525,7 @@ class _RegisterFormState extends State<_RegisterForm> {
     } catch (_) {
       if (!mounted) return;
       setState(() => _isSubmitting = false);
-      _snack('Ошибка подключения к серверу', color: Colors.red[700]);
+      _snack(context.l10n.connectionError, color: Colors.red[700]);
     }
   }
 
@@ -545,27 +545,27 @@ class _RegisterFormState extends State<_RegisterForm> {
           _showSimPicker(sims);
         }
       case SimResult.unsupported:
-        _snack('Определение номера SIM недоступно на этой платформе');
+        _snack(context.l10n.simUnsupported);
       case SimResult.permissionDenied:
-        _snack('Нет доступа к данным телефона');
+        _snack(context.l10n.simPermissionDenied);
       case SimResult.permissionPermanentlyDenied:
         _snack(
-          'Разрешение отклонено. Откройте настройки приложения.',
-          action: SnackBarAction(label: 'Настройки', onPressed: SimService.openSettings),
+          context.l10n.simPermissionBlockedDesc,
+          action: SnackBarAction(label: context.l10n.openSettingsBtn, onPressed: SimService.openSettings),
         );
       case SimResult.noSimFound:
-        _snack('SIM-карта не обнаружена или не вставлена');
+        _snack(context.l10n.simCardNotFound);
       case SimResult.error:
-        _snack('Ошибка: ${result.errorMessage ?? "неизвестная"}');
+        _snack(context.l10n.profileSaveError(result.errorMessage ?? '?'));
     }
   }
 
   void _applySimCard(SimCard sim) {
     if (sim.phoneNumber?.isNotEmpty == true) {
       _phoneCtrl.text = sim.phoneNumber!;
-      _snack('Номер: ${sim.phoneNumber} (${sim.displayInfo})');
+      _snack('${sim.phoneNumber} (${sim.displayInfo})');
     } else {
-      _snack('Оператор: ${sim.displayInfo}. Введите номер вручную.');
+      _snack(context.l10n.simNumberUnavailable(sim.displayInfo));
     }
   }
 
@@ -580,17 +580,17 @@ class _RegisterFormState extends State<_RegisterForm> {
           mainAxisSize: MainAxisSize.min,
           children: [
             const SizedBox(height: 12),
-            const Text('Выберите SIM-карту',
-                style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+            Text(context.l10n.selectSim,
+                style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
             const SizedBox(height: 8),
             ...sims.map((sim) => ListTile(
-              leading: const Icon(Icons.sim_card_outlined, color: Color(0xFFD4765B)),
+              leading: Icon(Icons.sim_card_outlined, color: Theme.of(context).colorScheme.primary),
               title: Text(sim.slotLabel),
               subtitle: Text(sim.displayInfo),
               trailing: sim.phoneNumber != null
                   ? Text(sim.phoneNumber!, style: const TextStyle(fontSize: 13))
-                  : const Text('номер неизвестен',
-                      style: TextStyle(color: Colors.grey, fontSize: 12)),
+                  : Text(context.l10n.unknownNumber,
+                      style: const TextStyle(color: Colors.grey, fontSize: 12)),
               onTap: () { Navigator.pop(context); _applySimCard(sim); },
             )),
             const SizedBox(height: 8),
@@ -647,6 +647,7 @@ class _RegisterFormState extends State<_RegisterForm> {
   // ── Индикатор прогресса (пилюли) ─────────────────────────────────────────
 
   Widget _buildStepIndicator() {
+    final accent = Theme.of(context).colorScheme.primary;
     return Row(
       mainAxisAlignment: MainAxisAlignment.center,
       children: List.generate(_totalSteps, (i) {
@@ -660,8 +661,8 @@ class _RegisterFormState extends State<_RegisterForm> {
           height: 8,
           decoration: BoxDecoration(
             color: (isCurrent || isDone)
-                ? const Color(0xFFD4765B)
-                : const Color(0xFFD4765B).withValues(alpha: 0.28),
+                ? accent
+                : accent.withValues(alpha: 0.28),
             borderRadius: BorderRadius.circular(4),
           ),
         );
@@ -687,10 +688,10 @@ class _RegisterFormState extends State<_RegisterForm> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        const Text('Кто вы?',
-            style: TextStyle(fontSize: 22, fontWeight: FontWeight.w700)),
+        Text(context.l10n.whoAreYou,
+            style: const TextStyle(fontSize: 22, fontWeight: FontWeight.w700)),
         const SizedBox(height: 4),
-        Text('Выберите вашу роль в учебном заведении',
+        Text(context.l10n.selectRole,
             style: TextStyle(fontSize: 14, color: subtleColor)),
         const SizedBox(height: 16),
         _AuthRoleSelector(
@@ -709,10 +710,10 @@ class _RegisterFormState extends State<_RegisterForm> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        const Text('Учебная группа',
-            style: TextStyle(fontSize: 22, fontWeight: FontWeight.w700)),
+        Text(context.l10n.academicGroup,
+            style: const TextStyle(fontSize: 22, fontWeight: FontWeight.w700)),
         const SizedBox(height: 4),
-        Text('Выберите группу, в которой вы учитесь',
+        Text(context.l10n.selectGroup,
             style: TextStyle(fontSize: 14, color: subtleColor)),
         const SizedBox(height: 16),
         _GroupSelectField(
@@ -731,25 +732,26 @@ class _RegisterFormState extends State<_RegisterForm> {
   // ── Шаг 2: персона ────────────────────────────────────────────────────────
 
   Widget _buildPersonStep() {
-    final subtleColor =
-        Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.55);
-    final cardColor = Theme.of(context).cardColor;
+    final theme = Theme.of(context);
+    final accent = theme.colorScheme.primary;
+    final subtleColor = theme.colorScheme.onSurface.withValues(alpha: 0.55);
+    final cardColor = theme.cardColor;
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        const Text('Найдите себя',
-            style: TextStyle(fontSize: 22, fontWeight: FontWeight.w700)),
+        Text(context.l10n.findYourself,
+            style: const TextStyle(fontSize: 22, fontWeight: FontWeight.w700)),
         const SizedBox(height: 4),
-        Text('Выберите ваше ФИО из списка',
+        Text(context.l10n.selectFullName,
             style: TextStyle(fontSize: 14, color: subtleColor)),
         const SizedBox(height: 12),
         // Поиск
         TextField(
           controller: _personSearchCtrl,
           decoration: InputDecoration(
-            hintText:   'Поиск по ФИО...',
-            prefixIcon: const Icon(Icons.search, color: Color(0xFFD4765B)),
+            hintText:   context.l10n.searchByName,
+            prefixIcon: Icon(Icons.search, color: accent),
             filled:     true,
             fillColor:  cardColor,
             contentPadding: const EdgeInsets.symmetric(vertical: 12),
@@ -759,7 +761,7 @@ class _RegisterFormState extends State<_RegisterForm> {
             ),
             focusedBorder: OutlineInputBorder(
               borderRadius: BorderRadius.circular(12),
-              borderSide: const BorderSide(color: Color(0xFFD4765B), width: 1.5),
+              borderSide: BorderSide(color: accent, width: 1.5),
             ),
           ),
         ),
@@ -767,7 +769,7 @@ class _RegisterFormState extends State<_RegisterForm> {
         // Список (высота ограничена, прокручивается внутри)
         ConstrainedBox(
           constraints: const BoxConstraints(maxHeight: 180),
-          child: _buildPeopleList(subtleColor),
+          child: _buildPeopleList(subtleColor, accent),
         ),
         // Подтверждение выбора
         if (_selectedPerson != null) ...[
@@ -775,26 +777,22 @@ class _RegisterFormState extends State<_RegisterForm> {
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
             decoration: BoxDecoration(
-              color: const Color(0xFFD4765B).withValues(alpha: 0.10),
+              color: accent.withValues(alpha: 0.10),
               borderRadius: BorderRadius.circular(10),
-              border: Border.all(
-                  color: const Color(0xFFD4765B).withValues(alpha: 0.45)),
+              border: Border.all(color: accent.withValues(alpha: 0.45)),
             ),
             child: Row(
               children: [
-                const Icon(Icons.check_circle_rounded,
-                    color: Color(0xFFD4765B), size: 18),
+                Icon(Icons.check_circle_rounded, color: accent, size: 18),
                 const SizedBox(width: 8),
                 Expanded(
                   child: Text(_selectedPerson!.fullName,
-                      style: const TextStyle(
-                          color: Color(0xFFD4765B),
-                          fontWeight: FontWeight.w600)),
+                      style: TextStyle(
+                          color: accent, fontWeight: FontWeight.w600)),
                 ),
                 GestureDetector(
                   onTap: () => setState(() => _selectedPerson = null),
-                  child: const Icon(Icons.close,
-                      color: Color(0xFFD4765B), size: 18),
+                  child: Icon(Icons.close, color: accent, size: 18),
                 ),
               ],
             ),
@@ -804,11 +802,10 @@ class _RegisterFormState extends State<_RegisterForm> {
     );
   }
 
-  Widget _buildPeopleList(Color subtleColor) {
+  Widget _buildPeopleList(Color subtleColor, Color accent) {
     if (_peopleLoading) {
-      return const Center(
-          child: CircularProgressIndicator(
-              strokeWidth: 2.5, color: Color(0xFFD4765B)));
+      return Center(
+          child: CircularProgressIndicator(strokeWidth: 2.5, color: accent));
     }
     if (_peopleError != null) {
       return Center(
@@ -820,8 +817,8 @@ class _RegisterFormState extends State<_RegisterForm> {
             Text(_peopleError!, style: TextStyle(color: Colors.red[400])),
             TextButton(
               onPressed: _loadPeople,
-              child: const Text('Повторить',
-                  style: TextStyle(color: Color(0xFFD4765B))),
+              child: Text(context.l10n.retry,
+                  style: TextStyle(color: accent)),
             ),
           ],
         ),
@@ -830,7 +827,7 @@ class _RegisterFormState extends State<_RegisterForm> {
     if (_filteredPeople.isEmpty) {
       return Center(
           child: Text(
-        _people.isEmpty ? 'Нет данных' : 'Никого не найдено',
+        _people.isEmpty ? context.l10n.noData : context.l10n.noneFound,
         style: TextStyle(color: subtleColor),
       ));
     }
@@ -845,8 +842,7 @@ class _RegisterFormState extends State<_RegisterForm> {
           dense:   true,
           leading: CircleAvatar(
             radius: 18,
-            backgroundColor:
-                selected ? const Color(0xFFD4765B) : Theme.of(context).cardColor,
+            backgroundColor: selected ? accent : Theme.of(context).cardColor,
             child: Text(
               p.fullName.isNotEmpty ? p.fullName[0].toUpperCase() : '?',
               style: TextStyle(
@@ -860,12 +856,11 @@ class _RegisterFormState extends State<_RegisterForm> {
             p.fullName,
             style: TextStyle(
               fontWeight: selected ? FontWeight.w600 : FontWeight.normal,
-              color:      selected ? const Color(0xFFD4765B) : null,
+              color:      selected ? accent : null,
             ),
           ),
           trailing: selected
-              ? const Icon(Icons.check_circle_rounded,
-                  color: Color(0xFFD4765B), size: 20)
+              ? Icon(Icons.check_circle_rounded, color: accent, size: 20)
               : null,
           onTap: () => setState(() => _selectedPerson = p),
         );
@@ -883,43 +878,43 @@ class _RegisterFormState extends State<_RegisterForm> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          const Text('Данные для входа',
-              style: TextStyle(fontSize: 22, fontWeight: FontWeight.w700)),
+          Text(context.l10n.loginCredentials,
+              style: const TextStyle(fontSize: 22, fontWeight: FontWeight.w700)),
           const SizedBox(height: 4),
-          Text('Придумайте логин и пароль',
+          Text(context.l10n.createLoginPwd,
               style: TextStyle(fontSize: 14, color: subtleColor)),
           const SizedBox(height: 16),
           // Имя — автоматически из ФИО, не редактируется
           if (_selectedPerson != null)
             _ReadOnlyField(
-              label: 'Имя',
+              label: context.l10n.name,
               value: _selectedPerson!.fullName,
               icon:  Icons.badge_outlined,
             ),
           if (_selectedPerson != null) const SizedBox(height: 12),
           _AuthField(
             controller: _nameCtrl,
-            label:     'Логин',
+            label:     context.l10n.loginField,
             icon:       Icons.alternate_email,
             validator: (v) =>
-                (v == null || v.trim().isEmpty) ? 'Введите логин' : null,
+                (v == null || v.trim().isEmpty) ? context.l10n.enterLogin : null,
           ),
           const SizedBox(height: 12),
           _AuthField(
             controller:  _passCtrl,
-            label:       'Пароль',
+            label:       context.l10n.password,
             icon:        Icons.lock_outline,
             obscureText: _obscurePass,
             suffixIcon: _VisibilityButton(
               obscure: _obscurePass,
               onTap: () => setState(() => _obscurePass = !_obscurePass),
             ),
-            validator: _validatePassword,
+            validator: (v) => _validatePasswordL10n(context, v),
           ),
           const SizedBox(height: 12),
           _AuthField(
             controller:  _confirmCtrl,
-            label:       'Подтвердите пароль',
+            label:       context.l10n.confirmPassword,
             icon:        Icons.lock_outline,
             obscureText: _obscureConfirm,
             suffixIcon: _VisibilityButton(
@@ -928,7 +923,7 @@ class _RegisterFormState extends State<_RegisterForm> {
                   setState(() => _obscureConfirm = !_obscureConfirm),
             ),
             validator: (v) =>
-                v != _passCtrl.text ? 'Пароли не совпадают' : null,
+                v != _passCtrl.text ? context.l10n.passwordsMismatch : null,
           ),
           if (SimService.isSupported) ...[
             const SizedBox(height: 12),
@@ -944,14 +939,14 @@ class _RegisterFormState extends State<_RegisterForm> {
           _LegalCheckbox(
             value:     _acceptedTerms,
             onChanged: (v) => setState(() => _acceptedTerms   = v ?? false),
-            label:     'Пользовательское соглашение',
+            label:     context.l10n.termsCheckbox,
             onView:    _showTermsSheet,
           ),
           const SizedBox(height: 2),
           _LegalCheckbox(
             value:     _acceptedPrivacy,
             onChanged: (v) => setState(() => _acceptedPrivacy = v ?? false),
-            label:     'Политику конфиденциальности',
+            label:     context.l10n.privacyCheckbox,
             onView:    _showPrivacySheet,
           ),
         ],
@@ -964,6 +959,7 @@ class _RegisterFormState extends State<_RegisterForm> {
   Widget _buildNavRow() {
     final isFirst = _step == 0;
     final isLast  = _step == 3;
+    final accent  = Theme.of(context).colorScheme.primary;
     return Row(
       children: [
         if (!isFirst) ...[
@@ -972,14 +968,13 @@ class _RegisterFormState extends State<_RegisterForm> {
               onPressed: _isSubmitting ? null : _goBack,
               style: OutlinedButton.styleFrom(
                 padding: const EdgeInsets.symmetric(vertical: 14),
-                side: const BorderSide(color: Color(0xFFD4765B)),
+                side: BorderSide(color: accent),
                 shape: RoundedRectangleBorder(
                     borderRadius: BorderRadius.circular(12)),
               ),
-              child: const Text('Назад',
+              child: Text(context.l10n.back,
                   style: TextStyle(
-                      color: Color(0xFFD4765B),
-                      fontWeight: FontWeight.w600)),
+                      color: accent, fontWeight: FontWeight.w600)),
             ),
           ),
           const SizedBox(width: 12),
@@ -988,7 +983,7 @@ class _RegisterFormState extends State<_RegisterForm> {
           flex: isFirst ? 1 : 2,
           child: isLast
               ? _AuthButton(
-                  label:     'Зарегистрироваться',
+                  label:     context.l10n.register,
                   isLoading: _isSubmitting,
                   enabled:   _acceptedTerms && _acceptedPrivacy,
                   onPressed: _submit,
@@ -998,15 +993,14 @@ class _RegisterFormState extends State<_RegisterForm> {
                       ? _goNext
                       : null,
                   style: FilledButton.styleFrom(
-                    backgroundColor: const Color(0xFFD4765B),
-                    disabledBackgroundColor:
-                        const Color(0xFFD4765B).withValues(alpha: 0.4),
+                    backgroundColor: accent,
+                    disabledBackgroundColor: accent.withValues(alpha: 0.4),
                     padding: const EdgeInsets.symmetric(vertical: 14),
                     shape: RoundedRectangleBorder(
                         borderRadius: BorderRadius.circular(12)),
                   ),
-                  child: const Text('Далее',
-                      style: TextStyle(
+                  child: Text(context.l10n.next,
+                      style: const TextStyle(
                           fontSize: 16, fontWeight: FontWeight.w600)),
                 ),
         ),
@@ -1017,9 +1011,9 @@ class _RegisterFormState extends State<_RegisterForm> {
 
 // ─── Валидаторы ──────────────────────────────────────────────────────────────
 
-String? _validatePassword(String? v) {
-  if (v == null || v.isEmpty) return 'Введите пароль';
-  if (v.length < 6) return 'Минимум 6 символов';
+String? _validatePasswordL10n(BuildContext context, String? v) {
+  if (v == null || v.isEmpty) return context.l10n.enterPassword;
+  if (v.length < 6) return context.l10n.minPassword;
   return null;
 }
 
@@ -1039,12 +1033,13 @@ class _PhoneField extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final hint = SimService.canReadNumber
-        ? 'Нажмите SIM для заполнения'
+        ? context.l10n.fillFromSim
         : '+7 (999) 000-00-00';
 
     final base = _inputDecoration(
-      'Номер телефона', Icons.phone_outlined,
+      context.l10n.phone, Icons.phone_outlined,
       Theme.of(context).cardColor,
+      accentColor: Theme.of(context).colorScheme.primary,
       hintText: hint,
     );
 
@@ -1061,8 +1056,8 @@ class _PhoneField extends StatelessWidget {
                 : IconButton(
                     icon: const Icon(Icons.sim_card_outlined),
                     tooltip: SimService.canReadNumber
-                        ? 'Заполнить из SIM-карты'
-                        : 'Показать оператора',
+                        ? context.l10n.fillFromSimBtn
+                        : context.l10n.showCarrier,
                     onPressed: onSimTap,
                   ),
           )
@@ -1081,7 +1076,7 @@ class _PhoneField extends StatelessWidget {
       validator: (v) {
         if (v == null || v.trim().isEmpty) return null;
         final digits = v.replaceAll(RegExp(r'\D'), '');
-        if (digits.length < 10) return 'Некорректный номер';
+        if (digits.length < 10) return context.l10n.invalidPhone;
         return null;
       },
       decoration: decoration,
@@ -1095,13 +1090,14 @@ InputDecoration _inputDecoration(
   String label,
   IconData icon,
   Color fillColor, {
+  required Color accentColor,
   String? hintText,
   Widget? suffixIcon,
 }) {
   return InputDecoration(
     labelText: label,
     hintText: hintText,
-    prefixIcon: Icon(icon, color: const Color(0xFFD4765B)),
+    prefixIcon: Icon(icon, color: accentColor),
     suffixIcon: suffixIcon,
     filled: true,
     fillColor: fillColor,
@@ -1115,7 +1111,7 @@ InputDecoration _inputDecoration(
     ),
     focusedBorder: OutlineInputBorder(
       borderRadius: BorderRadius.circular(12),
-      borderSide: const BorderSide(color: Color(0xFFD4765B), width: 1.5),
+      borderSide: BorderSide(color: accentColor, width: 1.5),
     ),
     errorBorder: OutlineInputBorder(
       borderRadius: BorderRadius.circular(12),
@@ -1153,6 +1149,7 @@ class _AuthField extends StatelessWidget {
       validator: validator,
       decoration: _inputDecoration(
         label, icon, Theme.of(context).cardColor,
+        accentColor: Theme.of(context).colorScheme.primary,
         suffixIcon: suffixIcon,
       ),
     );
@@ -1170,7 +1167,7 @@ class _VisibilityButton extends StatelessWidget {
     return IconButton(
       icon: Icon(
         obscure ? Icons.visibility_off : Icons.visibility,
-        color: const Color(0xFF757575),
+        color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.5),
       ),
       onPressed: onTap,
     );
@@ -1192,15 +1189,15 @@ class _AuthButton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final accent = Theme.of(context).colorScheme.primary;
     return SizedBox(
       width: double.infinity,
       height: 50,
       child: FilledButton(
         onPressed: (isLoading || !enabled) ? null : onPressed,
         style: FilledButton.styleFrom(
-          backgroundColor: const Color(0xFFD4765B),
-          disabledBackgroundColor:
-              const Color(0xFFD4765B).withValues(alpha: 0.6),
+          backgroundColor: accent,
+          disabledBackgroundColor: accent.withValues(alpha: 0.6),
           shape: RoundedRectangleBorder(
             borderRadius: BorderRadius.circular(12),
           ),
@@ -1268,8 +1265,10 @@ class _GroupSelectField extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final hasValue = value != null;
-    final cardColor   = Theme.of(context).cardColor;
-    final subtleColor = Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.55);
+    final theme = Theme.of(context);
+    final cardColor   = theme.cardColor;
+    final accent = theme.colorScheme.primary;
+    final subtleColor = theme.colorScheme.onSurface.withValues(alpha: 0.55);
     final hasLoadError = !isLoading && groups.isEmpty && errorText != null;
     return GestureDetector(
       onTap: () => _openPicker(context),
@@ -1288,14 +1287,14 @@ class _GroupSelectField extends StatelessWidget {
             ),
             child: Row(
               children: [
-                const Icon(Icons.school_outlined, color: Color(0xFFD4765B), size: 22),
+                Icon(Icons.school_outlined, color: accent, size: 22),
                 const SizedBox(width: 12),
                 Expanded(
                   child: isLoading
-                      ? const Text('Загрузка групп...',
-                          style: TextStyle(fontSize: 16, color: Color(0xFF757575)))
+                      ? Text(context.l10n.loadingGroups,
+                          style: TextStyle(fontSize: 16, color: subtleColor))
                       : Text(
-                          hasValue ? value! : 'Учебная группа',
+                          hasValue ? value! : context.l10n.academicGroup,
                           style: TextStyle(
                             fontSize: 16,
                             color: hasValue ? null : subtleColor,
@@ -1303,9 +1302,9 @@ class _GroupSelectField extends StatelessWidget {
                         ),
                 ),
                 if (isLoading)
-                  const SizedBox(
+                  SizedBox(
                     width: 18, height: 18,
-                    child: CircularProgressIndicator(strokeWidth: 2),
+                    child: CircularProgressIndicator(strokeWidth: 2, color: accent),
                   )
                 else if (hasLoadError)
                   const Icon(Icons.refresh, color: Color(0xFFE53935))
@@ -1318,16 +1317,16 @@ class _GroupSelectField extends StatelessWidget {
             Padding(
               padding: const EdgeInsets.only(left: 12, top: 6),
               child: Text(
-                '${errorText!} Нажмите, чтобы повторить.',
+                context.l10n.tapToRetry(errorText!),
                 style: const TextStyle(fontSize: 12, color: Color(0xFFE53935)),
               ),
             )
           else if (showError)
-            const Padding(
-              padding: EdgeInsets.only(left: 12, top: 6),
+            Padding(
+              padding: const EdgeInsets.only(left: 12, top: 6),
               child: Text(
-                'Выберите учебную группу',
-                style: TextStyle(fontSize: 12, color: Color(0xFFE53935)),
+                context.l10n.selectEduGroup,
+                style: const TextStyle(fontSize: 12, color: Color(0xFFE53935)),
               ),
             ),
         ],
@@ -1389,9 +1388,9 @@ class _GroupPickerSheetState extends State<_GroupPickerSheet> {
             ),
           ),
           const SizedBox(height: 12),
-          const Text(
-            'Учебная группа',
-            style: TextStyle(fontSize: 17, fontWeight: FontWeight.w600),
+          Text(
+            context.l10n.academicGroup,
+            style: const TextStyle(fontSize: 17, fontWeight: FontWeight.w600),
           ),
           const SizedBox(height: 12),
           Padding(
@@ -1400,7 +1399,7 @@ class _GroupPickerSheetState extends State<_GroupPickerSheet> {
               controller: _searchController,
               autofocus: true,
               decoration: InputDecoration(
-                hintText: 'Поиск...',
+                hintText: context.l10n.searchGroups,
                 prefixIcon: const Icon(Icons.search),
                 filled: true,
                 fillColor: Theme.of(context).scaffoldBackgroundColor,
@@ -1416,28 +1415,29 @@ class _GroupPickerSheetState extends State<_GroupPickerSheet> {
           const Divider(height: 1),
           Expanded(
             child: _filtered.isEmpty
-                ? const Center(
-                    child: Text('Группа не найдена',
-                        style: TextStyle(color: Color(0xFF757575))),
+                ? Center(
+                    child: Text(context.l10n.groupNotFound,
+                        style: TextStyle(
+                            color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.55))),
                   )
                 : ListView.builder(
                     itemCount: _filtered.length,
                     itemBuilder: (context, i) {
                       final group = _filtered[i];
                       final isSelected = group == widget.current;
+                      final accent = Theme.of(context).colorScheme.primary;
+                      final subtleColor = Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.55);
                       return ListTile(
                         leading: CircleAvatar(
                           backgroundColor: isSelected
-                              ? const Color(0xFFD4765B)
+                              ? accent
                               : Theme.of(context).scaffoldBackgroundColor,
                           child: Text(
                             group.split('-').first,
                             style: TextStyle(
                               fontSize: 11,
                               fontWeight: FontWeight.bold,
-                              color: isSelected
-                                  ? Colors.white
-                                  : const Color(0xFF757575),
+                              color: isSelected ? Colors.white : subtleColor,
                             ),
                           ),
                         ),
@@ -1450,8 +1450,7 @@ class _GroupPickerSheetState extends State<_GroupPickerSheet> {
                           ),
                         ),
                         trailing: isSelected
-                            ? const Icon(Icons.check_circle,
-                                color: Color(0xFFD4765B))
+                            ? Icon(Icons.check_circle, color: accent)
                             : null,
                         onTap: () => Navigator.pop(context, group),
                       );
@@ -1490,7 +1489,7 @@ class _ReadOnlyField extends StatelessWidget {
       ),
       child: Row(
         children: [
-          Icon(icon, color: const Color(0xFFD4765B), size: 22),
+          Icon(icon, color: Theme.of(context).colorScheme.primary, size: 22),
           const SizedBox(width: 12),
           Expanded(
             child: Column(
@@ -1526,14 +1525,14 @@ class _AuthRoleSelector extends StatelessWidget {
     return Row(
       children: [
         _AuthRoleChip(
-          label: 'Студент',
+          label: context.l10n.student,
           icon: Icons.person_outline,
           selected: value == 'student',
           onTap: () => onChanged('student'),
         ),
         const SizedBox(width: 8),
         _AuthRoleChip(
-          label: 'Преподаватель',
+          label: context.l10n.teacher,
           icon: Icons.school,
           selected: value == 'teacher',
           onTap: () => onChanged('teacher'),
@@ -1558,6 +1557,8 @@ class _AuthRoleChip extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final accent = Theme.of(context).colorScheme.primary;
+    final subtleColor = Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.55);
     return Expanded(
       child: GestureDetector(
         onTap: onTap,
@@ -1565,28 +1566,24 @@ class _AuthRoleChip extends StatelessWidget {
           duration: const Duration(milliseconds: 200),
           padding: const EdgeInsets.symmetric(vertical: 12),
           decoration: BoxDecoration(
-            color: selected
-                ? const Color(0xFFD4765B)
-                : Theme.of(context).cardColor,
+            color: selected ? accent : Theme.of(context).cardColor,
             borderRadius: BorderRadius.circular(12),
             border: Border.all(
-              color: selected
-                  ? const Color(0xFFD4765B)
-                  : Theme.of(context).dividerColor,
+              color: selected ? accent : Theme.of(context).dividerColor,
             ),
           ),
           child: Row(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
               Icon(icon, size: 18,
-                  color: selected ? Colors.white : const Color(0xFF757575)),
+                  color: selected ? Colors.white : subtleColor),
               const SizedBox(width: 8),
               Text(
                 label,
                 style: TextStyle(
                   fontSize: 14,
                   fontWeight: FontWeight.w600,
-                  color: selected ? Colors.white : const Color(0xFF757575),
+                  color: selected ? Colors.white : subtleColor,
                 ),
               ),
             ],
@@ -1623,7 +1620,7 @@ class _LegalCheckbox extends StatelessWidget {
           child: Checkbox(
             value: value,
             onChanged: onChanged,
-            activeColor: const Color(0xFFD4765B),
+            activeColor: Theme.of(context).colorScheme.primary,
             shape: RoundedRectangleBorder(
                 borderRadius: BorderRadius.circular(4)),
           ),
@@ -1633,16 +1630,16 @@ class _LegalCheckbox extends StatelessWidget {
           child: Wrap(
             crossAxisAlignment: WrapCrossAlignment.center,
             children: [
-              const Text('Принимаю ', style: TextStyle(fontSize: 13)),
+              Text(context.l10n.iAccept, style: const TextStyle(fontSize: 13)),
               GestureDetector(
                 onTap: onView,
                 child: Text(
                   label,
-                  style: const TextStyle(
+                  style: TextStyle(
                     fontSize: 13,
-                    color: Color(0xFFD4765B),
+                    color: Theme.of(context).colorScheme.primary,
                     decoration: TextDecoration.underline,
-                    decorationColor: Color(0xFFD4765B),
+                    decorationColor: Theme.of(context).colorScheme.primary,
                   ),
                 ),
               ),
@@ -1716,13 +1713,13 @@ class _LegalDocSheet extends StatelessWidget {
             child: FilledButton(
               onPressed: () => Navigator.pop(context),
               style: FilledButton.styleFrom(
-                backgroundColor: const Color(0xFFD4765B),
+                backgroundColor: Theme.of(context).colorScheme.primary,
                 minimumSize: const Size(double.infinity, 46),
                 shape: RoundedRectangleBorder(
                     borderRadius: BorderRadius.circular(12)),
               ),
-              child: const Text('Закрыть',
-                  style: TextStyle(
+              child: Text(context.l10n.close,
+                  style: const TextStyle(
                       fontSize: 15, fontWeight: FontWeight.w600)),
             ),
           ),
@@ -1763,7 +1760,8 @@ class _LegalDocSheet extends StatelessWidget {
                   children: [
                     Text('• ',
                         style: TextStyle(
-                            fontSize: 13, color: const Color(0xFFD4765B))),
+                            fontSize: 13,
+                            color: Theme.of(context).colorScheme.primary)),
                     Expanded(
                       child: Text(item,
                           style: TextStyle(

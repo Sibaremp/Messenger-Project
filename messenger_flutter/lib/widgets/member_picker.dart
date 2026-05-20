@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import '../l10n/app_localizations.dart';
 import '../models.dart';
 
 // ─── Секция выбора участников с поиском, фильтрацией по группам и
@@ -123,9 +124,9 @@ class _MemberPickerSectionState extends State<MemberPickerSection> {
         // ── Заголовок + счётчик ──────────────────────────────────────────
         Row(
           children: [
-            const Text(
-              'Добавить участников',
-              style: TextStyle(fontWeight: FontWeight.w600, fontSize: 13),
+            Text(
+              context.l10n.addMembers,
+              style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 13),
             ),
             if (widget.selected.isNotEmpty) ...[
               const SizedBox(width: 8),
@@ -155,7 +156,7 @@ class _MemberPickerSectionState extends State<MemberPickerSection> {
           controller: _searchController,
           onChanged: (v) => setState(() => _query = v.trim()),
           decoration: InputDecoration(
-            hintText: 'Поиск по ФИО или группе…',
+            hintText: context.l10n.searchByNameGroup,
             hintStyle: TextStyle(
               color: isDark ? Colors.white38 : Colors.black38,
               fontSize: 13,
@@ -198,7 +199,7 @@ class _MemberPickerSectionState extends State<MemberPickerSection> {
               padding: EdgeInsets.zero,
               children: [
                 _GroupChip(
-                  label: 'Все',
+                  label: context.l10n.allNotif,
                   active: _activeGroups.isEmpty,
                   color: primary,
                   isDark: isDark,
@@ -328,7 +329,7 @@ class _MemberPickerSectionState extends State<MemberPickerSection> {
                     padding: const EdgeInsets.symmetric(vertical: 12),
                     child: Center(
                       child: Text(
-                        'Никого не найдено',
+                        context.l10n.noneFound,
                         style: TextStyle(
                           fontSize: 13,
                           color: isDark ? Colors.white38 : Colors.black38,

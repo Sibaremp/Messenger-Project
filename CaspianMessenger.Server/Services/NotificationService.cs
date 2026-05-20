@@ -20,9 +20,15 @@ public class NotificationService(
         // Определяем тип чата для FCM payload один раз
         var chat = await db.Chats.AsNoTracking().FirstOrDefaultAsync(c => c.Id == chatId);
         var isGroup = chat?.Type is "group" or "community";
+        var chatName = isGroup ? chat?.Name : null;
 
         // Plaintext for FCM (push notification body is always readable)
         var plainText = message.Text;
+
+        // Определяем тип вложения для уведомления
+        var fcmText = string.IsNullOrWhiteSpace(plainText)
+            ? GetAttachmentLabel(message.Attachments)
+            : plainText;
 
         foreach (var memberId in memberIds)
         {
@@ -41,15 +47,38 @@ public class NotificationService(
             // FCM — только не автору; использует plaintext (пуш не шифруется)
             if (memberId == message.SenderId) continue;
 
+            // Тип вложения для клиента (чтобы показать иконку)
+            var attachmentType = message.Attachments.Count > 0
+                ? message.Attachments[0].Type
+                : null;
+
             await fcmService.SendAsync(memberId.ToString(),
                 NotificationPayload.Message(
-                    chatId:     chatId.ToString(),
-                    senderId:   message.SenderId.ToString(),
-                    senderName: message.SenderName,
-                    text:       string.IsNullOrWhiteSpace(plainText) ? "[вложение]" : plainText,
-                    avatarUrl:  message.SenderAvatarPath ?? "",
-                    isGroup:    isGroup));
+                    chatId:         chatId.ToString(),
+                    senderId:       message.SenderId.ToString(),
+                    senderName:     message.SenderName,
+                    text:           fcmText,
+                    avatarUrl:      message.SenderAvatarPath ?? "",
+                    isGroup:        isGroup,
+                    chatName:       chatName,
+                    attachmentType: attachmentType));
         }
+    }
+
+    /// <summary>Возвращает читаемую метку для вложения в push-уведомлении.</summary>
+    private static string GetAttachmentLabel(List<AttachmentDto> attachments)
+    {
+        if (attachments.Count == 0) return "[вложение]";
+        var type = attachments[0].Type?.ToLowerInvariant() ?? "";
+        return type switch
+        {
+            "image"  => "📷 Фото",
+            "video"  => "🎥 Видео",
+            "audio"  => "🎵 Голосовое сообщение",
+            "voice"  => "🎵 Голосовое сообщение",
+            "document" or "file" => "📎 Файл",
+            _ => "[вложение]"
+        };
     }
 
     // ── SignalR: остальные события ────────────────────────────────────────────

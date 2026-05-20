@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
+import '../l10n/app_localizations.dart';
 import '../services/api_config.dart';
 import '../services/audio_player_service.dart';
 
@@ -181,7 +182,7 @@ class _AudioMessageBubbleState extends State<AudioMessageBubble> {
                   padding: const EdgeInsets.only(left: 6, bottom: 2),
                   child: _hasError
                       ? Text(
-                          'Ошибка воспроизведения',
+                          context.l10n.playbackError,
                           style: TextStyle(fontSize: 10, color: fgDim),
                         )
                       : Text(

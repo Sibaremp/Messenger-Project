@@ -6,6 +6,7 @@ import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart';
 import '../models.dart';
 import '../app_constants.dart';
+import '../l10n/app_localizations.dart';
 import '../services/api_config.dart' show ApiConfig;
 import '../services/chat_service.dart';
 import 'contact_profile_screen.dart';
@@ -135,12 +136,12 @@ class _GroupProfileScreenState extends State<GroupProfileScreen> {
             decoration: BoxDecoration(color: Colors.grey[300],
                 borderRadius: BorderRadius.circular(2))),
           const SizedBox(height: 8),
-          _PickerTile(icon: Icons.camera_alt_outlined, label: 'Сделать фото',
+          _PickerTile(icon: Icons.camera_alt_outlined, label: context.l10n.takePhoto,
             onTap: () { Navigator.pop(context); _pickAvatar(ImageSource.camera); }),
-          _PickerTile(icon: Icons.photo_library_outlined, label: 'Выбрать из галереи',
+          _PickerTile(icon: Icons.photo_library_outlined, label: context.l10n.chooseGallery,
             onTap: () { Navigator.pop(context); _pickAvatar(ImageSource.gallery); }),
           if (_editAvatarPath != null)
-            _PickerTile(icon: Icons.delete_outline, label: 'Удалить фото',
+            _PickerTile(icon: Icons.delete_outline, label: context.l10n.deletePhoto,
               color: Colors.red,
               onTap: () { Navigator.pop(context); setState(() => _editAvatarPath = null); }),
           const SizedBox(height: 8),
@@ -233,8 +234,8 @@ class _GroupProfileScreenState extends State<GroupProfileScreen> {
               ),
             ),
             title: Text(member.role == MemberRole.admin
-                ? 'Снять роль администратора'
-                : 'Назначить администратором'),
+                ? context.l10n.removeAdmin
+                : context.l10n.makeAdmin),
             onTap: () {
               Navigator.pop(context);
               final newRole = member.role == MemberRole.admin
@@ -252,16 +253,17 @@ class _GroupProfileScreenState extends State<GroupProfileScreen> {
   }
 
   void _confirmRemove(ChatMember member) {
+    final l = context.l10n;
     showDialog(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Text('Удалить участника?'),
-        content: Text('«${member.displayName ?? member.name}» будет исключён из чата.'),
+        title: Text(l.removeMemberTitle),
+        content: Text(l.removeMemberDesc(member.displayName ?? member.name)),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Отмена')),
+          TextButton(onPressed: () => Navigator.pop(ctx), child: Text(l.cancel)),
           TextButton(
             onPressed: () { Navigator.pop(ctx); setState(() => _members.remove(member)); },
-            child: const Text('Удалить', style: TextStyle(color: Colors.red)),
+            child: Text(l.delete, style: const TextStyle(color: Colors.red)),
           ),
         ],
       ),
@@ -269,14 +271,15 @@ class _GroupProfileScreenState extends State<GroupProfileScreen> {
   }
 
   void _confirmDelete() {
-    final label = chat.type == ChatType.community ? 'сообщество' : 'группу';
+    final l = context.l10n;
+    final title = chat.type == ChatType.community ? l.deleteCommunity : l.deleteGroup;
     showDialog(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: Text('Удалить $label?'),
-        content: Text('«${chat.name}» будет удалено навсегда.'),
+        title: Text(title),
+        content: Text(l.deleteChatForever(chat.name)),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Отмена')),
+          TextButton(onPressed: () => Navigator.pop(ctx), child: Text(l.cancel)),
           TextButton(
             onPressed: () async {
               Navigator.pop(ctx);
@@ -285,7 +288,7 @@ class _GroupProfileScreenState extends State<GroupProfileScreen> {
               if (widget.embedded) { widget.onBack?.call(); }
               else { Navigator.pop(context, true); }
             },
-            child: const Text('Удалить', style: TextStyle(color: Colors.red)),
+            child: Text(l.delete, style: const TextStyle(color: Colors.red)),
           ),
         ],
       ),
@@ -338,7 +341,7 @@ class _GroupProfileScreenState extends State<GroupProfileScreen> {
     final isDark      = Theme.of(context).brightness == Brightness.dark;
     final isCommunity = chat.type == ChatType.community;
     final allMembers  = _allMembers;
-    final memberLabel = isCommunity ? 'Подписчики' : 'Участники';
+    final memberLabel = isCommunity ? context.l10n.subscribersLabel : context.l10n.membersLabel;
 
     final scaffold = Scaffold(
       backgroundColor: isDark ? const Color(0xFF0F0F0F) : const Color(0xFFEFEFF4),
@@ -375,14 +378,14 @@ class _GroupProfileScreenState extends State<GroupProfileScreen> {
               else if (_isEditing)
                 TextButton(
                   onPressed: _save,
-                  child: const Text('Сохранить',
-                      style: TextStyle(color: Colors.white,
+                  child: Text(context.l10n.save,
+                      style: const TextStyle(color: Colors.white,
                           fontWeight: FontWeight.w600, fontSize: 15)),
                 )
               else if (_canEdit)
                 IconButton(
                   icon: const Icon(Icons.edit_outlined, color: Colors.white),
-                  tooltip: 'Редактировать',
+                  tooltip: context.l10n.edit,
                   onPressed: _startEditing,
                 ),
             ],
@@ -420,10 +423,10 @@ class _GroupProfileScreenState extends State<GroupProfileScreen> {
                 // ── Редактирование: имя + описание ─────────────────────────
                 if (_isEditing) ...[
                   _Section(isDark: isDark, children: [
-                    _EditField(controller: _nameCtrl, label: 'Название',
+                    _EditField(controller: _nameCtrl, label: context.l10n.chatNameLabel,
                         icon: Icons.edit_outlined, isDark: isDark),
                     _Divider(isDark: isDark),
-                    _EditField(controller: _descCtrl, label: 'Описание',
+                    _EditField(controller: _descCtrl, label: context.l10n.descriptionLabel,
                         icon: Icons.info_outline, maxLines: 3,
                         maxLength: 200, isDark: isDark),
                   ]),
@@ -436,15 +439,15 @@ class _GroupProfileScreenState extends State<GroupProfileScreen> {
                     _InfoRow(
                       icon: isCommunity
                           ? Icons.campaign_outlined : Icons.group_outlined,
-                      label: 'Тип',
-                      value: isCommunity ? 'Сообщество' : 'Группа',
+                      label: context.l10n.typeLabel,
+                      value: isCommunity ? context.l10n.communityType : context.l10n.groupType,
                       isDark: isDark,
                     ),
                     if (chat.description?.isNotEmpty == true) ...[
                       _Divider(isDark: isDark),
                       _InfoRow(
                         icon: Icons.info_outline,
-                        label: 'Описание',
+                        label: context.l10n.descriptionLabel,
                         value: chat.description!,
                         isDark: isDark,
                       ),
@@ -453,8 +456,8 @@ class _GroupProfileScreenState extends State<GroupProfileScreen> {
                       _Divider(isDark: isDark),
                       _InfoRow(
                         icon: Icons.calendar_today_outlined,
-                        label: 'Создан',
-                        value: _formatDate(chat.createdAt!),
+                        label: context.l10n.createdLabel,
+                        value: _formatDate(context, chat.createdAt!),
                         isDark: isDark,
                       ),
                     ],
@@ -465,8 +468,8 @@ class _GroupProfileScreenState extends State<GroupProfileScreen> {
                     _InfoRow(
                       icon: isCommunity
                           ? Icons.campaign_outlined : Icons.group_outlined,
-                      label: 'Тип',
-                      value: isCommunity ? 'Сообщество' : 'Группа',
+                      label: context.l10n.typeLabel,
+                      value: isCommunity ? context.l10n.communityType : context.l10n.groupType,
                       isDark: isDark, locked: true,
                     ),
                   ]),
@@ -483,7 +486,7 @@ class _GroupProfileScreenState extends State<GroupProfileScreen> {
                               color: Colors.red, size: 22),
                           const SizedBox(width: 14),
                           Text(
-                            isCommunity ? 'Удалить сообщество' : 'Удалить группу',
+                            isCommunity ? context.l10n.deleteCommunity : context.l10n.deleteGroup,
                             style: const TextStyle(
                                 color: Colors.red, fontSize: 15,
                                 fontWeight: FontWeight.w500),
@@ -705,11 +708,11 @@ class _GroupProfileScreenState extends State<GroupProfileScreen> {
                   color: Colors.black.withValues(alpha: 0.5),
                   borderRadius: BorderRadius.circular(20),
                 ),
-                child: const Row(mainAxisSize: MainAxisSize.min, children: [
-                  Icon(Icons.camera_alt, color: Colors.white, size: 16),
-                  SizedBox(width: 6),
-                  Text('Изменить фото',
-                      style: TextStyle(color: Colors.white, fontSize: 13)),
+                child: Row(mainAxisSize: MainAxisSize.min, children: [
+                  const Icon(Icons.camera_alt, color: Colors.white, size: 16),
+                  const SizedBox(width: 6),
+                  Text(context.l10n.changePhoto,
+                      style: const TextStyle(color: Colors.white, fontSize: 13)),
                 ]),
               ),
             ]),
@@ -721,12 +724,8 @@ class _GroupProfileScreenState extends State<GroupProfileScreen> {
 
   // ── Helpers ────────────────────────────────────────────────────────────────
 
-  String _formatDate(DateTime dt) {
-    const months = [
-      'января', 'февраля', 'марта', 'апреля', 'мая', 'июня',
-      'июля', 'августа', 'сентября', 'октября', 'ноября', 'декабря',
-    ];
-    return '${dt.day} ${months[dt.month - 1]} ${dt.year}';
+  String _formatDate(BuildContext context, DateTime dt) {
+    return context.l10n.fullDate(dt.day, dt.month, dt.year);
   }
 }
 
@@ -924,7 +923,7 @@ class _MemberTile extends StatelessWidget {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  isCurrentUser ? 'Вы' : (member.displayName ?? member.name),
+                  isCurrentUser ? context.l10n.you : (member.displayName ?? member.name),
                   style: TextStyle(
                     fontWeight: FontWeight.w600,
                     fontSize: 15,
@@ -938,10 +937,10 @@ class _MemberTile extends StatelessWidget {
                 const SizedBox(height: 1),
                 Text(
                   isCurrentUser
-                      ? 'Вы'
+                      ? context.l10n.you
                       : (member.displayName != null && member.displayName != member.name
                           ? member.name
-                          : (member.group ?? (member.isOnline ? 'в сети' : ''))),
+                          : (member.group ?? (member.isOnline ? context.l10n.online : ''))),
                   style: TextStyle(
                     fontSize: 13,
                     color: member.isOnline && !isCurrentUser
@@ -958,7 +957,7 @@ class _MemberTile extends StatelessWidget {
           // ── Правая часть: роль или кнопки управления ─────────────────────
           if (canManage) ...[
             if (member.role == MemberRole.admin)
-              _RoleBadge(label: 'Админ', color: Colors.blue),
+              _RoleBadge(label: context.l10n.adminRole, color: Colors.blue),
             const SizedBox(width: 6),
             GestureDetector(
               onTap: onTap,
@@ -978,7 +977,7 @@ class _MemberTile extends StatelessWidget {
             ),
           ] else if (member.role != MemberRole.member) ...[
             _RoleBadge(
-              label: member.role == MemberRole.creator ? 'Создатель' : 'Админ',
+              label: member.role == MemberRole.creator ? context.l10n.creatorRole : context.l10n.adminRole,
               color: member.role == MemberRole.creator ? primary : Colors.blue,
             ),
           ],
@@ -1056,7 +1055,7 @@ class MemberAvatar extends StatelessWidget {
     }
 
     // Инициалы
-    final label = isCurrentUser ? 'Вы' : (member.displayName ?? member.name);
+    final label = isCurrentUser ? context.l10n.you : (member.displayName ?? member.name);
     final initial = label.isNotEmpty ? label[0].toUpperCase() : '?';
     final bg = isCurrentUser ? primaryColor : _bgColor(member.name);
 

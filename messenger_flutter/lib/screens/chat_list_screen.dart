@@ -18,6 +18,8 @@ import 'call_screen.dart' show CallScreen, IncomingCallOverlay;
 import 'chat_screen.dart';
 import 'search_screen.dart';
 import '../utils/app_snack.dart';
+import '../services/notification_service.dart';
+import '../l10n/app_localizations.dart';
 
 /// Главный мобильный экран с BottomNavigationBar (4 вкладки).
 /// Используется при ширине экрана < [AppSizes.desktopBreakpoint].
@@ -113,7 +115,7 @@ class _ChatListScreenState extends State<ChatListScreen>
             setState(() {
               _notifications.insert(0, _AppNotification(
                 type:       _NotifType.mention,
-                senderName: msg.senderName ?? 'Участник',
+                senderName: msg.senderName ?? context.l10n.participantLabel,
                 message:    msg.text,
                 time:       msg.time,
               ));
@@ -125,7 +127,7 @@ class _ChatListScreenState extends State<ChatListScreen>
             setState(() {
               _notifications.insert(0, _AppNotification(
                 type:       _NotifType.reply,
-                senderName: msg.senderName ?? 'Участник',
+                senderName: msg.senderName ?? context.l10n.participantLabel,
                 message:    msg.text,
                 time:       msg.time,
               ));
@@ -161,8 +163,11 @@ class _ChatListScreenState extends State<ChatListScreen>
       barrierColor: Colors.transparent,
       pageBuilder: (ctx, anim, anim2) => IncomingCallOverlay(
         callInfo: info,
-        onAccept: () {
+        onAccept: () async {
           Navigator.of(ctx).pop();
+          await CallScreen.forceEndActive();
+          await Future.delayed(const Duration(milliseconds: 200));
+          if (!mounted) return;
           Navigator.of(context, rootNavigator: true).push(
             MaterialPageRoute<void>(
               fullscreenDialog: true,
@@ -332,9 +337,9 @@ class _ChatListScreenState extends State<ChatListScreen>
                 child: Icon(Icons.group, color: AppColors.textLight),
               ),
               title: Text(
-                  isAcademic ? 'Создать академическую группу' : 'Создать группу',
+                  isAcademic ? context.l10n.createAcademicGroup : context.l10n.createGroup,
                   style: const TextStyle(fontWeight: FontWeight.w600)),
-              subtitle: const Text('Все участники могут писать'),
+              subtitle: Text(context.l10n.allCanWrite),
               onTap: () {
                 Navigator.pop(context);
                 _openCreateDialog(ChatType.group, isAcademic: isAcademic);
@@ -346,9 +351,9 @@ class _ChatListScreenState extends State<ChatListScreen>
                 child: Icon(Icons.campaign, color: AppColors.textLight),
               ),
               title: Text(
-                  isAcademic ? 'Создать академическое сообщество' : 'Создать сообщество',
+                  isAcademic ? context.l10n.createAcademicCommunity : context.l10n.createCommunity,
                   style: const TextStyle(fontWeight: FontWeight.w600)),
-              subtitle: const Text('Только администратор пишет'),
+              subtitle: Text(context.l10n.onlyAdminWrites),
               onTap: () {
                 Navigator.pop(context);
                 _openCreateDialog(ChatType.community, isAcademic: isAcademic);
@@ -380,6 +385,7 @@ class _ChatListScreenState extends State<ChatListScreen>
       setState(() => _contacts.add(AppContact(name: name)));
     }
 
+    NotificationService.instance.openChat(chat.id);
     await Navigator.push(
       context,
       MaterialPageRoute(
@@ -393,6 +399,7 @@ class _ChatListScreenState extends State<ChatListScreen>
         ),
       ),
     );
+    NotificationService.instance.closeChat(chat.id);
     _loadChats();
   }
 
@@ -403,7 +410,7 @@ class _ChatListScreenState extends State<ChatListScreen>
         type: type,
         isAcademic: isAcademic,
         contacts: _contacts,
-        creatorName: widget.auth.currentUser?.name ?? 'Я',
+        creatorName: widget.auth.currentUser?.name ?? context.l10n.you,
         onCreated: (name, members, adminName, description) async {
           try {
             final chat = await widget.service.createGroupOrCommunity(
@@ -419,7 +426,7 @@ class _ChatListScreenState extends State<ChatListScreen>
             }
           } catch (e) {
             if (mounted) {
-                            AppSnack.error(context, 'Ошибка: $e');
+                            AppSnack.error(context, context.l10n.profileSaveError(e.toString()));
             }
           }
         },
@@ -437,7 +444,14 @@ class _ChatListScreenState extends State<ChatListScreen>
           onLoginSuccess: () {
             Navigator.of(ctx).pushAndRemoveUntil(
               MaterialPageRoute(
-                builder: (_) => ChatListScreen(service: widget.service, auth: widget.auth),
+                builder: (_) {
+                  widget.signalingService?.ensureConnected();
+                  return ChatListScreen(
+                    service: widget.service,
+                    auth: widget.auth,
+                    signalingService: widget.signalingService,
+                  );
+                },
               ),
               (_) => false,
             );
@@ -526,15 +540,15 @@ class _ChatListScreenState extends State<ChatListScreen>
         labelBehavior: NavigationDestinationLabelBehavior.alwaysShow,
         height: 64,
         destinations: [
-          const NavigationDestination(
-            icon: Icon(Icons.school_outlined),
-            selectedIcon: Icon(Icons.school),
-            label: 'Академический',
+          NavigationDestination(
+            icon: const Icon(Icons.school_outlined),
+            selectedIcon: const Icon(Icons.school),
+            label: context.l10n.academicSection,
           ),
-          const NavigationDestination(
-            icon: Icon(Icons.chat_bubble_outline_rounded),
-            selectedIcon: Icon(Icons.chat_bubble_rounded),
-            label: 'Общение',
+          NavigationDestination(
+            icon: const Icon(Icons.chat_bubble_outline_rounded),
+            selectedIcon: const Icon(Icons.chat_bubble_rounded),
+            label: context.l10n.chatSection,
           ),
           NavigationDestination(
             icon: Badge(
@@ -544,12 +558,12 @@ class _ChatListScreenState extends State<ChatListScreen>
               child: const Icon(Icons.notifications_none_rounded),
             ),
             selectedIcon: const Icon(Icons.notifications_rounded),
-            label: 'Уведомления',
+            label: context.l10n.notificationsTab,
           ),
-          const NavigationDestination(
-            icon: Icon(Icons.settings_outlined),
-            selectedIcon: Icon(Icons.settings_rounded),
-            label: 'Настройки',
+          NavigationDestination(
+            icon: const Icon(Icons.settings_outlined),
+            selectedIcon: const Icon(Icons.settings_rounded),
+            label: context.l10n.settingsTab,
           ),
         ],
       ),
@@ -561,7 +575,7 @@ class _ChatListScreenState extends State<ChatListScreen>
       bottom: false,
       child: Column(
         children: [
-          _buildTabHeader('Академический', _academicTabCtrl),
+          _buildTabHeader(context.l10n.academicSection, _academicTabCtrl),
           Expanded(
             child: TabBarView(
               controller: _academicTabCtrl,
@@ -581,7 +595,7 @@ class _ChatListScreenState extends State<ChatListScreen>
       bottom: false,
       child: Column(
         children: [
-          _buildTabHeader('Общение', _chatTabCtrl),
+          _buildTabHeader(context.l10n.chatSection, _chatTabCtrl),
           Expanded(
             child: TabBarView(
               controller: _chatTabCtrl,
@@ -652,10 +666,10 @@ class _ChatListScreenState extends State<ChatListScreen>
             scrollDirection: Axis.horizontal,
             padding: const EdgeInsets.symmetric(horizontal: 16),
             children: [
-              _tgTabChip('Личные', ctrl.index == 0, Icons.person_outline,
+              _tgTabChip(context.l10n.personalTab, ctrl.index == 0, Icons.person_outline,
                   () => _switchTab(ctrl, 0), primary, isDark),
               const SizedBox(width: 8),
-              _tgTabChip('Группы', ctrl.index == 1, Icons.group_outlined,
+              _tgTabChip(context.l10n.groupsTab, ctrl.index == 1, Icons.group_outlined,
                   () => _switchTab(ctrl, 1), primary, isDark),
             ],
           ),
@@ -744,13 +758,13 @@ class _ChatListScreenState extends State<ChatListScreen>
                 size: 64,
                 color: AppColors.subtle.withValues(alpha: 0.3)),
             const SizedBox(height: 16),
-            Text('Нет чатов',
+            Text(context.l10n.noChats,
                 style: TextStyle(
                     fontSize: 17,
                     fontWeight: FontWeight.w600,
                     color: isDark ? Colors.white38 : Colors.black38)),
             const SizedBox(height: 6),
-            Text('Нажмите ✎ чтобы начать диалог',
+            Text(context.l10n.pressEditToStart,
                 style: TextStyle(
                     fontSize: 13,
                     color: isDark ? Colors.white24 : Colors.black26)),
@@ -774,6 +788,7 @@ class _ChatListScreenState extends State<ChatListScreen>
           child: InkWell(
             key: ValueKey(chat.id),
             onTap: () async {
+              NotificationService.instance.openChat(chat.id);
               await Navigator.push(
                 context,
                 MaterialPageRoute(
@@ -787,6 +802,7 @@ class _ChatListScreenState extends State<ChatListScreen>
                   ),
                 ),
               );
+              NotificationService.instance.closeChat(chat.id);
               _loadChats();
             },
             child: Column(
@@ -986,9 +1002,9 @@ class _MobileNotificationsPageState extends State<_MobileNotificationsPage> {
             padding: const EdgeInsets.fromLTRB(20, 14, 12, 8),
             child: Row(
               children: [
-                const Expanded(
-                  child: Text('Уведомления',
-                      style: TextStyle(
+                Expanded(
+                  child: Text(context.l10n.notificationsTab,
+                      style: const TextStyle(
                           fontSize: 28,
                           fontWeight: FontWeight.w700,
                           letterSpacing: -0.5)),
@@ -997,8 +1013,8 @@ class _MobileNotificationsPageState extends State<_MobileNotificationsPage> {
                   TextButton.icon(
                     onPressed: _markAllRead,
                     icon: const Icon(Icons.done_all_rounded, size: 16),
-                    label: const Text('Все прочитаны',
-                        style: TextStyle(fontSize: 13)),
+                    label: Text(context.l10n.markAllRead,
+                        style: const TextStyle(fontSize: 13)),
                     style: TextButton.styleFrom(
                       foregroundColor:
                           Theme.of(context).colorScheme.primary,
@@ -1014,10 +1030,10 @@ class _MobileNotificationsPageState extends State<_MobileNotificationsPage> {
             padding: const EdgeInsets.fromLTRB(16, 0, 16, 10),
             child: Row(
               children: [
-                _buildFilterChip('Все', _selectedFilter == 0,
+                _buildFilterChip(context.l10n.allNotif, _selectedFilter == 0,
                     () => setState(() => _selectedFilter = 0)),
                 const SizedBox(width: 8),
-                _buildFilterChip('За сутки', _selectedFilter == 1,
+                _buildFilterChip(context.l10n.lastDay, _selectedFilter == 1,
                     () => setState(() => _selectedFilter = 1)),
               ],
             ),
@@ -1032,9 +1048,9 @@ class _MobileNotificationsPageState extends State<_MobileNotificationsPage> {
           // Список
           Expanded(
             child: items.isEmpty
-                ? const Center(
-                    child: Text('Нет уведомлений',
-                        style: TextStyle(color: AppColors.subtle)),
+                ? Center(
+                    child: Text(context.l10n.noNotifications,
+                        style: const TextStyle(color: AppColors.subtle)),
                   )
                 : ListView.separated(
                     padding: const EdgeInsets.all(16),
@@ -1110,7 +1126,7 @@ class _MobileNotificationsPageState extends State<_MobileNotificationsPage> {
     final isMention = n.type == _NotifType.mention;
     final accentColor = isMention ? Theme.of(context).colorScheme.primary : Colors.teal;
     final typeIcon   = isMention ? Icons.alternate_email : Icons.reply;
-    final typeLabel  = isMention ? 'Упоминание' : 'Ответ на сообщение';
+    final typeLabel  = isMention ? context.l10n.mentionLabel : context.l10n.replyNotif;
 
     return Row(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -1192,7 +1208,7 @@ class _MobileNotificationsPageState extends State<_MobileNotificationsPage> {
                   borderRadius: BorderRadius.circular(6),
                 ),
                 child: Text(
-                  'Прочитать',
+                  context.l10n.readBtn,
                   style: TextStyle(
                     fontSize: 11,
                     fontWeight: FontWeight.w600,
@@ -1259,15 +1275,17 @@ class _CreateChatDialogState extends State<_CreateChatDialog> {
   final Set<String> _selectedContacts = {};
   String? _nameError;
 
-  String get _title {
-    final base = widget.type == ChatType.group ? 'Новая группа' : 'Новое сообщество';
-    return widget.isAcademic ? '$base (академическая)' : base;
+  String _title(BuildContext context) {
+    final base = widget.type == ChatType.group
+        ? context.l10n.newGroup
+        : context.l10n.newCommunityTitle;
+    return widget.isAcademic ? '$base (${context.l10n.academicSection.toLowerCase()})' : base;
   }
 
   Future<void> _submit() async {
     final name = _nameController.text.trim();
     if (name.isEmpty) {
-      setState(() => _nameError = 'Введите название');
+      setState(() => _nameError = context.l10n.enterNameError);
       return;
     }
 
@@ -1299,7 +1317,7 @@ class _CreateChatDialogState extends State<_CreateChatDialog> {
   @override
   Widget build(BuildContext context) {
     return AlertDialog(
-      title: Text(_title),
+      title: Text(_title(context)),
       content: SizedBox(
         width: double.maxFinite,
         child: Column(
@@ -1310,7 +1328,7 @@ class _CreateChatDialogState extends State<_CreateChatDialog> {
               controller: _nameController,
               autofocus: true,
               decoration: InputDecoration(
-                labelText: 'Название',
+                labelText: context.l10n.chatNameLabel,
                 errorText: _nameError,
                 border: const OutlineInputBorder(),
               ),
@@ -1323,9 +1341,9 @@ class _CreateChatDialogState extends State<_CreateChatDialog> {
               controller: _descriptionController,
               minLines: 1,
               maxLines: 3,
-              decoration: const InputDecoration(
-                labelText: 'Описание (необязательно)',
-                border: OutlineInputBorder(),
+              decoration: InputDecoration(
+                labelText: context.l10n.descriptionOpt,
+                border: const OutlineInputBorder(),
               ),
             ),
             const SizedBox(height: 16),
@@ -1342,12 +1360,12 @@ class _CreateChatDialogState extends State<_CreateChatDialog> {
       actions: [
         TextButton(
           onPressed: () => Navigator.pop(context),
-          child: const Text('Отмена'),
+          child: Text(context.l10n.cancel),
         ),
         FilledButton(
           onPressed: _submit,
           style: FilledButton.styleFrom(backgroundColor: Theme.of(context).colorScheme.primary),
-          child: const Text('Создать'),
+          child: Text(context.l10n.create),
         ),
       ],
     );
@@ -1470,7 +1488,7 @@ class _ContactPickerScreenState extends State<_ContactPickerScreen> {
           borderRadius: BorderRadius.circular(8),
         ),
         child: Text(
-          'Открыть',
+          context.l10n.openBtn,
           style: TextStyle(
             fontSize: 11,
             color: Theme.of(context).colorScheme.primary,
@@ -1485,14 +1503,14 @@ class _ContactPickerScreenState extends State<_ContactPickerScreen> {
           color: Colors.green.withValues(alpha: 0.12),
           borderRadius: BorderRadius.circular(8),
         ),
-        child: const Row(
+        child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(Icons.check_circle_outline, size: 11, color: Colors.green),
-            SizedBox(width: 4),
+            const Icon(Icons.check_circle_outline, size: 11, color: Colors.green),
+            const SizedBox(width: 4),
             Text(
-              'В приложении',
-              style: TextStyle(
+              context.l10n.inAppContacts,
+              style: const TextStyle(
                 fontSize: 11,
                 color: Colors.green,
                 fontWeight: FontWeight.w600,
@@ -1510,7 +1528,7 @@ class _ContactPickerScreenState extends State<_ContactPickerScreen> {
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Новый чат'),
+        title: Text(context.l10n.newChat),
         bottom: PreferredSize(
           preferredSize: const Size.fromHeight(56),
           child: Padding(
@@ -1519,7 +1537,7 @@ class _ContactPickerScreenState extends State<_ContactPickerScreen> {
               controller: _searchController,
               onChanged: (v) => setState(() => _query = v),
               decoration: InputDecoration(
-                hintText: 'Поиск по имени или номеру…',
+                hintText: context.l10n.searchByNameOrNumber,
                 prefixIcon: const Icon(Icons.search),
                 suffixIcon: _query.isNotEmpty
                     ? IconButton(
@@ -1551,8 +1569,8 @@ class _ContactPickerScreenState extends State<_ContactPickerScreen> {
                 children: [
                   CircularProgressIndicator(color: Theme.of(context).colorScheme.primary),
                   SizedBox(height: 16),
-                  Text('Загружаем контакты…',
-                      style: TextStyle(color: AppColors.subtle)),
+                  Text(context.l10n.loadingContacts,
+                      style: const TextStyle(color: AppColors.subtle)),
                 ],
               ),
             );
@@ -1568,22 +1586,22 @@ class _ContactPickerScreenState extends State<_ContactPickerScreen> {
                     const Icon(Icons.contacts_outlined,
                         size: 56, color: AppColors.subtle),
                     const SizedBox(height: 16),
-                    const Text(
-                      'Нет доступа к контактам',
-                      style: TextStyle(
+                    Text(
+                      context.l10n.noContactAccess,
+                      style: const TextStyle(
                           fontWeight: FontWeight.bold, fontSize: 16),
                     ),
                     const SizedBox(height: 8),
-                    const Text(
-                      'Разрешите доступ в настройках, чтобы найти друзей по телефонной книге',
+                    Text(
+                      context.l10n.allowAccessDesc,
                       textAlign: TextAlign.center,
-                      style: TextStyle(color: AppColors.subtle),
+                      style: const TextStyle(color: AppColors.subtle),
                     ),
                     const SizedBox(height: 20),
                     FilledButton.icon(
                       onPressed: _loadDeviceContacts,
                       icon: const Icon(Icons.refresh),
-                      label: const Text('Повторить'),
+                      label: Text(context.l10n.retry),
                       style: FilledButton.styleFrom(
                           backgroundColor: Theme.of(context).colorScheme.primary),
                     ),
@@ -1610,21 +1628,21 @@ class _ContactPickerScreenState extends State<_ContactPickerScreen> {
     return ListView(
       children: [
         _SectionHeader(
-          title: 'Контакты (${deviceContacts.length})',
+          title: '${context.l10n.deviceContacts} (${deviceContacts.length})',
         ),
         if (deviceContacts.isEmpty)
-          const Padding(
-            padding: EdgeInsets.symmetric(vertical: 20),
+          Padding(
+            padding: const EdgeInsets.symmetric(vertical: 20),
             child: Center(
-              child: Text('Контакты не найдены',
-                  style: TextStyle(color: AppColors.subtle)),
+              child: Text(context.l10n.noContactsFound,
+                  style: const TextStyle(color: AppColors.subtle)),
             ),
           )
         else
           ...deviceContacts.map((dc) => _deviceContactTile(dc)),
         if (appContacts.isNotEmpty) ...[
           _SectionHeader(
-            title: 'В приложении (${appContacts.length})',
+            title: '${context.l10n.inAppContacts} (${appContacts.length})',
           ),
           ...appContacts.map((c) => _appContactTile(c)),
         ],
@@ -1635,9 +1653,9 @@ class _ContactPickerScreenState extends State<_ContactPickerScreen> {
 
   Widget _buildAppContactsOnly(List<AppContact> contacts) {
     if (contacts.isEmpty) {
-      return const Center(
+      return Center(
         child:
-            Text('Нет контактов', style: TextStyle(color: AppColors.subtle)),
+            Text(context.l10n.noContactsFound, style: const TextStyle(color: AppColors.subtle)),
       );
     }
     return ListView(

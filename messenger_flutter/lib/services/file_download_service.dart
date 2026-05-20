@@ -194,6 +194,33 @@ class FileDownloadService {
     _emit(key, const DownloadProgress(state: DownloadState.idle));
   }
 
+  /// Отменяет все активные загрузки и очищает кэш-директорию.
+  /// Вызывается при очистке временного кэша в настройках.
+  Future<void> clearAll() async {
+    // Отмена активных загрузок
+    for (final sub in _active.values) {
+      await sub.cancel();
+    }
+    _active.clear();
+
+    // Удаляем директорию кэша
+    try {
+      final dir = await getApplicationDocumentsDirectory();
+      final cache = Directory('${dir.path}/downloads');
+      if (await cache.exists()) {
+        await cache.delete(recursive: true);
+      }
+    } catch (_) {}
+
+    // Оповещаем все открытые стримы — файлы больше нет
+    for (final entry in _lastState.entries) {
+      if (entry.value.state != DownloadState.idle) {
+        _emit(entry.key, const DownloadProgress(state: DownloadState.idle));
+      }
+    }
+    _lastState.clear();
+  }
+
   // ── Внутреннее ──────────────────────────────────────────────────────────
 
   Future<void> _ensureInitialState(String serverPath, String key) async {

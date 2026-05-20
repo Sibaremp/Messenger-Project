@@ -116,19 +116,33 @@ public class AdminStatsController(AppDbContext db) : ControllerBase
             .Select(g => new { date = g.Key, newCount = g.Count() })
             .ToListAsync();
 
-        var cumulative = baseCount;
+        // Зарегистрированные аккаунты мессенджера по дням
+        var baseUsers = await db.Users.CountAsync(u => u.CreatedAt < since);
+        var usersByDay = await db.Users
+            .Where(u => u.CreatedAt >= since)
+            .GroupBy(u => u.CreatedAt.Date)
+            .Select(g => new { date = g.Key, newCount = g.Count() })
+            .ToListAsync();
+
+        var cumulativePeople = baseCount;
+        var cumulativeUsers  = baseUsers;
         var result = Enumerable.Range(0, days)
             .Select(i =>
             {
-                var d = since.AddDays(i);
-                var entry = byDay.FirstOrDefault(x => x.date == d);
-                var newToday = entry?.newCount ?? 0;
-                cumulative += newToday;
+                var d        = since.AddDays(i);
+                var pEntry   = byDay.FirstOrDefault(x => x.date == d);
+                var uEntry   = usersByDay.FirstOrDefault(x => x.date == d);
+                var newPeople = pEntry?.newCount ?? 0;
+                var newUsers  = uEntry?.newCount ?? 0;
+                cumulativePeople += newPeople;
+                cumulativeUsers  += newUsers;
                 return new
                 {
-                    date     = d.ToString("yyyy-MM-dd"),
-                    newCount = newToday,
-                    total    = cumulative
+                    date            = d.ToString("yyyy-MM-dd"),
+                    newCount        = newPeople,
+                    total           = cumulativePeople,
+                    newRegistered   = newUsers,
+                    totalRegistered = cumulativeUsers
                 };
             })
             .ToList();

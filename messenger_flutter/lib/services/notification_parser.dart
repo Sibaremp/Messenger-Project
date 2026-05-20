@@ -17,6 +17,7 @@ class NotificationPayload {
   final String? senderId;
   final String? senderName;
   final String? body;
+  final String? attachmentType;
 
   // call_incoming
   final String? callId;
@@ -35,6 +36,7 @@ class NotificationPayload {
     this.senderId,
     this.senderName,
     this.body,
+    this.attachmentType,
     this.callId,
     this.callerId,
     this.callerName,
@@ -58,6 +60,7 @@ class NotificationPayload {
           senderName: data['senderName'] as String?,
           // Server sends 'text'; some gateways may use 'body'
           body: (data['text'] ?? data['body']) as String?,
+          attachmentType: data['attachmentType'] as String?,
         );
 
       case 'call_incoming':
@@ -99,6 +102,7 @@ class NotificationPayload {
         if (senderId != null) 'senderId': senderId,
         if (senderName != null) 'senderName': senderName,
         if (body != null) 'body': body,
+        if (attachmentType != null) 'attachmentType': attachmentType,
         if (callId != null) 'callId': callId,
         if (callerId != null) 'callerId': callerId,
         if (callerName != null) 'callerName': callerName,

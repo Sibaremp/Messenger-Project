@@ -8,5 +8,7 @@ public class ActiveCall
     public string State { get; set; } = "calling"; // calling | active | ended
     public bool IsGroup { get; set; }
     public string InitiatorId { get; set; } = string.Empty;
+    public string? ChatId { get; set; }
+    public string InitiatorName { get; set; } = string.Empty;
     public HashSet<string> Participants { get; set; } = [];
 }

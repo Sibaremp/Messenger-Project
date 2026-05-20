@@ -2,6 +2,7 @@ import 'dart:io';
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import '../l10n/app_localizations.dart';
 import '../services/auth_service.dart' as svc;
 import '../services/api_config.dart' show ApiConfig;
 import '../utils/app_snack.dart';
@@ -170,7 +171,7 @@ class _ContactProfileDialogState extends State<_ContactProfileDialog> {
     final cb = widget.onCall;
     if (cb == null) {
       // Нет прямого чата — показываем подсказку
-            AppSnack.info(context, 'Откройте личный чат для звонка');
+            AppSnack.info(context, context.l10n.cantCallNoChat);
       return;
     }
     Navigator.of(context).pop();
@@ -185,7 +186,7 @@ class _ContactProfileDialogState extends State<_ContactProfileDialog> {
         backgroundColor: isDark ? const Color(0xFF2C2C2E) : Colors.white,
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
         title: Text(
-          'Заблокировать ${widget.name}?',
+          context.l10n.blockUserTitle(widget.name),
           style: TextStyle(
             fontSize: 16,
             fontWeight: FontWeight.w600,
@@ -193,7 +194,7 @@ class _ContactProfileDialogState extends State<_ContactProfileDialog> {
           ),
         ),
         content: Text(
-          'Пользователь не сможет отправлять вам сообщения.',
+          context.l10n.blockUserDesc,
           style: TextStyle(
             fontSize: 14,
             color: isDark ? Colors.white60 : Colors.black54,
@@ -203,7 +204,7 @@ class _ContactProfileDialogState extends State<_ContactProfileDialog> {
           TextButton(
             onPressed: () => Navigator.pop(ctx, false),
             child: Text(
-              'Отмена',
+              context.l10n.cancel,
               style: TextStyle(color: isDark ? Colors.white70 : Colors.black54),
             ),
           ),
@@ -212,9 +213,9 @@ class _ContactProfileDialogState extends State<_ContactProfileDialog> {
               Navigator.pop(ctx, true);
               Navigator.of(context).pop(); // закрыть оверлей
             },
-            child: const Text(
-              'Заблокировать',
-              style: TextStyle(color: Colors.red),
+            child: Text(
+              context.l10n.blockBtn,
+              style: const TextStyle(color: Colors.red),
             ),
           ),
         ],
@@ -276,7 +277,7 @@ class _ContactProfileDialogState extends State<_ContactProfileDialog> {
                               _InfoRow(
                                 icon: Icons.phone_outlined,
                                 value: widget.phone!,
-                                label: 'Телефон',
+                                label: context.l10n.phoneLabel,
                                 primary: primary,
                                 isDark: isDark,
                                 trailing: _phoneInApp
@@ -290,7 +291,7 @@ class _ContactProfileDialogState extends State<_ContactProfileDialog> {
                               _InfoRow(
                                 icon: Icons.info_outline,
                                 value: widget.description!,
-                                label: 'О себе',
+                                label: context.l10n.aboutLabel,
                                 primary: primary,
                                 isDark: isDark,
                               ),
@@ -301,7 +302,7 @@ class _ContactProfileDialogState extends State<_ContactProfileDialog> {
                               _InfoRow(
                                 icon: Icons.school_outlined,
                                 value: widget.group!,
-                                label: 'Учебная группа',
+                                label: context.l10n.academicGroup,
                                 primary: primary,
                                 isDark: isDark,
                               ),
@@ -318,7 +319,7 @@ class _ContactProfileDialogState extends State<_ContactProfileDialog> {
                             icon: _muted
                                 ? Icons.notifications_off_outlined
                                 : Icons.notifications_outlined,
-                            label: 'Уведомления',
+                            label: context.l10n.notifLabel,
                             primary: primary,
                             isDark: isDark,
                             trailing: Switch(
@@ -334,7 +335,7 @@ class _ContactProfileDialogState extends State<_ContactProfileDialog> {
                           _Divider(isDark: isDark, left: 52),
                           _ActionRow(
                             icon: Icons.block_outlined,
-                            label: 'Заблокировать',
+                            label: context.l10n.blockBtn,
                             primary: Colors.red,
                             isDark: isDark,
                             textColor: Colors.red,
@@ -416,7 +417,7 @@ class _ContactProfileDialogState extends State<_ContactProfileDialog> {
           // ── Статус ──────────────────────────────────────────────────
           const SizedBox(height: 4),
           Text(
-            widget.isOnline ? 'в сети' : 'последний раз недавно',
+            widget.isOnline ? context.l10n.online : context.l10n.offlineStatus,
             style: TextStyle(
               fontSize: 13,
               color: widget.isOnline
@@ -434,7 +435,7 @@ class _ContactProfileDialogState extends State<_ContactProfileDialog> {
               children: [
                 _QuickButton(
                   icon: Icons.chat_outlined,
-                  label: 'Чат',
+                  label: context.l10n.chatBtn,
                   primary: primary,
                   isDark: isDark,
                   onTap: _handleChat,
@@ -443,14 +444,14 @@ class _ContactProfileDialogState extends State<_ContactProfileDialog> {
                   icon: _muted
                       ? Icons.notifications_off_outlined
                       : Icons.notifications_outlined,
-                  label: _muted ? 'Включить' : 'Звук',
+                  label: _muted ? context.l10n.soundOff : context.l10n.soundOn,
                   primary: _muted ? Colors.grey : primary,
                   isDark: isDark,
                   onTap: _toggleMute,
                 ),
                 _QuickButton(
                   icon: Icons.call_outlined,
-                  label: 'Звонок',
+                  label: context.l10n.callBtn,
                   primary: widget.onCall != null ? primary : Colors.grey,
                   isDark: isDark,
                   onTap: _handleCall,
@@ -858,7 +859,7 @@ class _ContactProfileScreenState extends State<ContactProfileScreen> {
           ],
           const SizedBox(height: 4),
           Text(
-            widget.isOnline ? 'в сети' : 'последний раз недавно',
+            widget.isOnline ? context.l10n.online : context.l10n.offlineStatus,
             style: TextStyle(
               fontSize: 13,
               color: widget.isOnline
@@ -874,7 +875,7 @@ class _ContactProfileScreenState extends State<ContactProfileScreen> {
               children: [
                 _QuickButton(
                   icon: Icons.chat_outlined,
-                  label: 'Чат',
+                  label: context.l10n.chatBtn,
                   primary: primary,
                   isDark: isDark,
                   onTap: widget.embedded
@@ -885,14 +886,14 @@ class _ContactProfileScreenState extends State<ContactProfileScreen> {
                   icon: _muted
                       ? Icons.notifications_off_outlined
                       : Icons.notifications_outlined,
-                  label: _muted ? 'Включить' : 'Звук',
+                  label: _muted ? context.l10n.soundOff : context.l10n.soundOn,
                   primary: _muted ? Colors.grey : primary,
                   isDark: isDark,
                   onTap: _toggleMute,
                 ),
                 _QuickButton(
                   icon: Icons.call_outlined,
-                  label: 'Звонок',
+                  label: context.l10n.callBtn,
                   primary: primary,
                   isDark: isDark,
                   onTap: () {},
@@ -1181,14 +1182,14 @@ class _InAppBadge extends StatelessWidget {
           color: Colors.green.withValues(alpha: 0.12),
           borderRadius: BorderRadius.circular(10),
         ),
-        child: const Row(
+        child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(Icons.check_circle_outline, size: 12, color: Colors.green),
-            SizedBox(width: 4),
+            const Icon(Icons.check_circle_outline, size: 12, color: Colors.green),
+            const SizedBox(width: 4),
             Text(
-              'В приложении',
-              style: TextStyle(
+              context.l10n.inAppContacts,
+              style: const TextStyle(
                 fontSize: 12,
                 color: Colors.green,
                 fontWeight: FontWeight.w600,

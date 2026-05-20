@@ -47,8 +47,9 @@ class LocalCacheService {
   // ── Сохранение ──────────────────────────────────────────────────────────────
 
   /// Сохраняет последние [maxMessages] сообщений.
+  /// Пустой список сохраняется намеренно — это сигнал «чат очищен»,
+  /// чтобы при следующем открытии не загружался устаревший кэш.
   Future<void> saveMessages(String chatId, List<Message> messages) async {
-    if (messages.isEmpty) return;
     final prefs  = await _p;
     final last   = messages.length > maxMessages
         ? messages.sublist(messages.length - maxMessages)

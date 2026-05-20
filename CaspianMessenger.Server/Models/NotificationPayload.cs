@@ -16,16 +16,26 @@ public static class NotificationPayload
         string senderName,
         string text,
         string avatarUrl = "",
-        bool isGroup = false) => new()
+        bool isGroup = false,
+        string? chatName = null,
+        string? attachmentType = null)
     {
-        ["type"]       = "message",
-        ["chatId"]     = chatId,
-        ["senderId"]   = senderId,
-        ["senderName"] = senderName,
-        ["text"]       = text.Length > MaxTextLength ? text[..MaxTextLength] + "…" : text,
-        ["avatarUrl"]  = avatarUrl,
-        ["isGroup"]    = isGroup.ToString().ToLowerInvariant()
-    };
+        var payload = new Dictionary<string, string>
+        {
+            ["type"]       = "message",
+            ["chatId"]     = chatId,
+            ["senderId"]   = senderId,
+            ["senderName"] = senderName,
+            ["text"]       = text.Length > MaxTextLength ? text[..MaxTextLength] + "…" : text,
+            ["avatarUrl"]  = avatarUrl,
+            ["isGroup"]    = isGroup.ToString().ToLowerInvariant()
+        };
+        if (!string.IsNullOrEmpty(chatName))
+            payload["chatName"] = chatName;
+        if (!string.IsNullOrEmpty(attachmentType))
+            payload["attachmentType"] = attachmentType;
+        return payload;
+    }
 
     /// <summary>Входящий звонок.</summary>
     public static Dictionary<string, string> Call(
