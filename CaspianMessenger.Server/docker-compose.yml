@@ -1,0 +1,61 @@
+services:
+
+  # ── PostgreSQL ────────────────────────────────────────────────────────────────
+  db:
+    image: postgres:17-alpine
+    container_name: caspian_db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: caspian_messenger
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-PSu36GXqLT3R}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d caspian_messenger"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  # ── ASP.NET Core API ──────────────────────────────────────────────────────────
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: caspian_server
+    restart: unless-stopped
+    ports:
+      - "5216:8080"
+    environment:
+      ASPNETCORE_ENVIRONMENT: Production
+      # Database — overrides appsettings.json
+      ConnectionStrings__Default: "Host=db;Port=5432;Database=caspian_messenger;Username=postgres;Password=${DB_PASSWORD:-PSu36GXqLT3R}"
+      # JWT
+      Jwt__Key: ${JWT_KEY:-your-256-bit-secret-key-here-change-in-production-32chars}
+      Jwt__Issuer: CaspianMessenger
+      Jwt__Audience: CaspianMessengerApp
+      Jwt__ExpirationDays: "30"
+      # Firebase (path inside the container)
+      Firebase__CredentialsPath: /app/docs/caspian-firebase-firebase-adminsdk-fbsvc-555d07af33.json
+      # FFmpeg (installed in Dockerfile)
+      FFmpeg__FfmpegPath: ffmpeg
+      FFmpeg__FfprobePath: ffprobe
+      # File storage
+      FileStorage__BasePath: ./uploads
+      # Logging
+      Serilog__MinimumLevel__Default: Information
+    volumes:
+      # Uploads persist between redeploys
+      - uploads_data:/app/uploads
+      # Firebase service-account key (read-only mount of local docs/)
+      - ./docs:/app/docs:ro
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  postgres_data:
+  uploads_data:

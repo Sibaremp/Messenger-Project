@@ -94,6 +94,8 @@ class _ChatScreenState extends State<ChatScreen> {
   final Set<String> _selectedIds = {};
   bool _isSelectionMode = false;
   bool _isUploadingFile = false;
+  String? _uploadingFileName;
+  AttachmentType? _uploadingFileType;
 
   // ── Режим редактирования ──────────────────────────────
   Message? _editingMessage;
@@ -257,10 +259,12 @@ class _ChatScreenState extends State<ChatScreen> {
     if (!mounted) return;
     switch (event) {
       case MessageReceived(:final chatId, :final message):
-        if (chatId != _currentChat.id) return;
+        // Сравниваем без учёта регистра — сервер и клиент могут давать UUID
+        // в разном регистре (lower/upper).
+        if (chatId.toLowerCase() != _currentChat.id.toLowerCase()) return;
         // Не дублируем, если сообщение уже есть (например, пришло и в ответе
         // от sendMessage, и через SignalR).
-        if (_messages.any((m) => m.id == message.id)) return;
+        if (_messages.any((m) => m.id.toLowerCase() == message.id.toLowerCase())) return;
         final wasNearBottom = _isNearBottom();
         setState(() {
           _setMessages([..._messages, message]);
@@ -313,12 +317,14 @@ class _ChatScreenState extends State<ChatScreen> {
           :final messageId,
           :final status,
         ):
-        if (chatId != _currentChat.id) return;
+        if (chatId.toLowerCase() != _currentChat.id.toLowerCase()) return;
         // Обновляем статус в нашем локальном списке, чтобы галочки
         // перекрасились (✓ → ✓✓ → голубые ✓✓) без перезагрузки чата.
         setState(() {
           _setMessages(_messages
-              .map((m) => m.id == messageId ? m.copyWith(status: status) : m)
+              .map((m) => m.id.toLowerCase() == messageId.toLowerCase()
+                  ? m.copyWith(status: status)
+                  : m)
               .toList());
         });
       case MessagePinned(:final chatId, :final messageId):
@@ -375,8 +381,19 @@ class _ChatScreenState extends State<ChatScreen> {
         // ChatScreen не требует дополнительных действий.
         break;
       case ConnectionRestored():
-        // Сервер восстановился — ResponsiveShell перезагрузит список чатов.
-        // Здесь дополнительных действий не требуется.
+        // SignalR переподключился — подтягиваем актуальное состояние чата:
+        // пропущенные сообщения и обновлённые статусы (sent/delivered/read),
+        // которые могли прийти пока соединение было разорвано.
+        widget.service.loadSingleChat(_currentChat.id).then((fresh) {
+          if (!mounted || fresh == null) return;
+          setState(() {
+            // Сливаем: сохраняем локально введённый текст/правки, но обновляем
+            // всё что пришло с сервера — новые сообщения и изменившиеся статусы.
+            _mergeMessages(fresh.messages);
+            // Обновляем метаданные чата (участники, название, онлайн-статусы).
+            _currentChat = fresh;
+          });
+        });
         break;
       case AdminNotificationReceived():
         // Обрабатывается в NotificationsPanel.
@@ -441,7 +458,14 @@ class _ChatScreenState extends State<ChatScreen> {
 
     // Показываем индикатор загрузки при отправке файла.
     final hasLocalFile = attachment != null || (attachments != null && attachments.isNotEmpty);
-    if (hasLocalFile && mounted) setState(() => _isUploadingFile = true);
+    if (hasLocalFile && mounted) {
+      final firstFile = attachment ?? attachments?.firstOrNull;
+      setState(() {
+        _isUploadingFile = true;
+        _uploadingFileName = firstFile?.fileName;
+        _uploadingFileType = firstFile?.type;
+      });
+    }
 
     try {
       final updated = await widget.service.sendMessage(
@@ -1246,8 +1270,12 @@ class _ChatScreenState extends State<ChatScreen> {
         : chat.members.where((m) => m.name != myName).firstOrNull;
 
     final peerId = otherMember?.userId ?? otherMember?.name ?? chat.id;
-    final peerName =
-        isGroup ? chat.name : (otherMember?.name ?? chat.name);
+    // Используем ФИО (displayName) если доступно, иначе — логин
+    final peerName = isGroup
+        ? chat.name
+        : (otherMember?.displayName?.isNotEmpty == true
+            ? otherMember!.displayName!
+            : otherMember?.name ?? chat.name);
 
     final groupIds = isGroup
         ? chat.members
@@ -1258,7 +1286,7 @@ class _ChatScreenState extends State<ChatScreen> {
     final groupNames = isGroup
         ? chat.members
             .where((m) => m.name != myName)
-            .map((m) => m.name)
+            .map((m) => m.displayName?.isNotEmpty == true ? m.displayName! : m.name)
             .toList()
         : <String>[];
 
@@ -1288,13 +1316,19 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   /// Проверяет наличие активного группового звонка и показывает баннер.
+  /// Баннер не показывается если текущий пользователь сам является инициатором
+  /// звонка — он уже находится в CallScreen и не нуждается в приглашении.
   void _checkActiveGroupCall() {
     final signaling = widget.signalingService;
     if (signaling == null) return;
     final chat = _currentChat;
     if (chat.type == ChatType.direct) return;
+    final myId   = widget.auth?.currentUser?.id   ?? '';
+    final myName = widget.auth?.currentUser?.name ?? '';
     signaling.fetchActiveCallForChat(chat.id).then((info) {
-      if (!mounted) return;
+      if (!mounted || info == null) return;
+      // Не показываем баннер если мы сами начали этот звонок
+      if (info.callerId == myId || info.callerId == myName) return;
       setState(() => _activeGroupCall = info);
     });
   }
@@ -1312,7 +1346,7 @@ class _ChatScreenState extends State<ChatScreen> {
         .toList();
     final groupNames = chat.members
         .where((m) => m.name != myName)
-        .map((m) => m.name)
+        .map((m) => m.displayName?.isNotEmpty == true ? m.displayName! : m.name)
         .toList();
     final canSpeak = chat.type != ChatType.community || chat.isCreatorOrAdmin(myName);
     Navigator.of(context, rootNavigator: true).push(
@@ -2201,7 +2235,10 @@ class _ChatScreenState extends State<ChatScreen> {
         children: [
           // ── Индикатор загрузки файла ──────────────────────────────────
           if (_isUploadingFile)
-            const LinearProgressIndicator(),
+            _UploadProgressBanner(
+              fileName: _uploadingFileName,
+              fileType: _uploadingFileType,
+            ),
 
           // ── Баннер активного группового звонка ──────────────────────────
           if (_activeGroupCall != null)
@@ -2249,6 +2286,24 @@ class _ChatScreenState extends State<ChatScreen> {
                   itemBuilder: (context, index) {
                     try {
                     final item = _items[index];
+                    // Для групповых чатов определяем, последнее ли это сообщение
+                    // в последовательности от одного отправителя (как в Telegram:
+                    // аватар показываем только у последнего пузыря серии).
+                    final isGroup = chat.type == ChatType.group;
+                    bool showAvatarForItem = false;
+                    bool reserveAvatarSpace = false;
+                    if (isGroup && item is _MsgItem && !item.message.isMe) {
+                      final nextIdx = index + 1;
+                      final isLastInSeq = nextIdx >= _items.length ||
+                          _items[nextIdx] is _SeparatorItem ||
+                          (_items[nextIdx] is _MsgItem &&
+                              (_items[nextIdx] as _MsgItem).message.isMe) ||
+                          (_items[nextIdx] is _MsgItem &&
+                              (_items[nextIdx] as _MsgItem).message.senderName !=
+                                  item.message.senderName);
+                      showAvatarForItem = isLastInSeq;
+                      reserveAvatarSpace = !isLastInSeq;
+                    }
                     return switch (item) {
                       _SeparatorItem(:final date) => DateSeparator(date: date),
                       _MsgItem(:final message) => isCommunity
@@ -2282,7 +2337,8 @@ class _ChatScreenState extends State<ChatScreen> {
                                   chat.type != ChatType.community,
                               myAvatarPath: _myAvatarPath,
                               showInterlocutorAvatar:
-                                  chat.type == ChatType.direct,
+                                  chat.type == ChatType.direct || showAvatarForItem,
+                              reserveAvatarSpace: reserveAvatarSpace,
                               interlocutorAvatarPath:
                                   chat.type == ChatType.direct
                                       ? chat.avatarPath
@@ -4045,6 +4101,126 @@ class _ActiveCallBanner extends StatelessWidget {
             ),
           ],
         ),
+      ),
+    );
+  }
+}
+
+// ── Баннер загрузки файла ─────────────────────────────────────────────────────
+
+class _UploadProgressBanner extends StatelessWidget {
+  final String? fileName;
+  final AttachmentType? fileType;
+
+  const _UploadProgressBanner({this.fileName, this.fileType});
+
+  IconData get _icon {
+    return switch (fileType) {
+      AttachmentType.image    => Icons.image_outlined,
+      AttachmentType.video    => Icons.videocam_outlined,
+      AttachmentType.audio    => Icons.audiotrack_outlined,
+      AttachmentType.document => Icons.insert_drive_file_outlined,
+      _                       => Icons.attach_file,
+    };
+  }
+
+  String get _label {
+    return switch (fileType) {
+      AttachmentType.image    => 'Отправка фото...',
+      AttachmentType.video    => 'Отправка видео...',
+      AttachmentType.audio    => 'Отправка аудио...',
+      AttachmentType.document => 'Отправка файла...',
+      _                       => 'Отправка...',
+    };
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final primary = Theme.of(context).colorScheme.primary;
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+      decoration: BoxDecoration(
+        color: isDark ? const Color(0xFF1E2533) : Colors.white,
+        border: Border(
+          top: BorderSide(
+            color: primary.withValues(alpha: 0.3),
+            width: 1,
+          ),
+        ),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.08),
+            blurRadius: 8,
+            offset: const Offset(0, -2),
+          ),
+        ],
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Row(
+            children: [
+              // Иконка типа файла
+              Container(
+                width: 36,
+                height: 36,
+                decoration: BoxDecoration(
+                  color: primary.withValues(alpha: 0.12),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Icon(_icon, color: primary, size: 20),
+              ),
+              const SizedBox(width: 12),
+              // Название и статус
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      _label,
+                      style: TextStyle(
+                        fontSize: 13,
+                        fontWeight: FontWeight.w600,
+                        color: isDark ? Colors.white : Colors.black87,
+                      ),
+                    ),
+                    if (fileName != null)
+                      Text(
+                        fileName!,
+                        style: TextStyle(
+                          fontSize: 11,
+                          color: isDark ? Colors.white54 : Colors.black45,
+                        ),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                  ],
+                ),
+              ),
+              // Анимированный спиннер
+              SizedBox(
+                width: 20,
+                height: 20,
+                child: CircularProgressIndicator(
+                  strokeWidth: 2,
+                  valueColor: AlwaysStoppedAnimation<Color>(primary),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          // Полоса прогресса (indeterminate)
+          ClipRRect(
+            borderRadius: BorderRadius.circular(2),
+            child: LinearProgressIndicator(
+              backgroundColor: primary.withValues(alpha: 0.12),
+              valueColor: AlwaysStoppedAnimation<Color>(primary),
+              minHeight: 3,
+            ),
+          ),
+        ],
       ),
     );
   }

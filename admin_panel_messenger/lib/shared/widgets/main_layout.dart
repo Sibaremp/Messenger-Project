@@ -3,6 +3,9 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import '../../features/auth/presentation/providers/auth_provider.dart';
 
+/// Ширина экрана, ниже которой сайдбар прячется в выдвижное меню (Drawer).
+const double kMobileBreakpoint = 800;
+
 class MainLayout extends StatelessWidget {
   final Widget child;
 
@@ -10,6 +13,36 @@ class MainLayout extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final isMobile = MediaQuery.sizeOf(context).width < kMobileBreakpoint;
+
+    if (isMobile) {
+      return Scaffold(
+        appBar: AppBar(
+          backgroundColor: const Color(0xFF0F2440),
+          foregroundColor: Colors.white,
+          elevation: 0,
+          title: Row(children: [
+            ClipRRect(
+              borderRadius: BorderRadius.circular(6),
+              child: Image.asset('assets/images/logo.png',
+                  width: 28, height: 28, fit: BoxFit.contain),
+            ),
+            const SizedBox(width: 10),
+            const Text('Caspian Admin',
+                style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700)),
+          ]),
+        ),
+        drawer: const Drawer(
+          width: 248,
+          child: _Sidebar(),
+        ),
+        body: ColoredBox(
+          color: const Color(0xFFF9FAFB),
+          child: child,
+        ),
+      );
+    }
+
     return Scaffold(
       body: Row(
         children: [
@@ -160,7 +193,14 @@ class _NavItem extends StatelessWidget {
         color: Colors.transparent,
         borderRadius: BorderRadius.circular(8),
         child: InkWell(
-          onTap: () => context.go(path),
+          onTap: () {
+            // На мобильном после выбора пункта закрываем выдвижное меню
+            final scaffold = Scaffold.maybeOf(context);
+            if (scaffold != null && scaffold.isDrawerOpen) {
+              Navigator.of(context).pop();
+            }
+            context.go(path);
+          },
           borderRadius: BorderRadius.circular(8),
           child: AnimatedContainer(
             duration: const Duration(milliseconds: 150),

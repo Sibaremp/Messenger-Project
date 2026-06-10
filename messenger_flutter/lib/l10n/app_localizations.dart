@@ -302,6 +302,10 @@ class AppLocalizations {
   String get speakerOn          => _t('Динамик вкл.',  'Speaker on',    'Динамик қосулы');
   String get speakerOff         => _t('Динамик выкл.', 'Speaker off',   'Динамик өшірулі');
   String get selectAudioOutput  => _t('Аудиовыход',    'Audio output',  'Дыбыс шығысы');
+  String get audioOutputSystemManaged => _t(
+      'Управление звуком — через настройки системы',
+      'Manage audio via system settings',
+      'Дыбысты жүйе параметрлері арқылы басқарыңыз');
   String get endCallToExit      => _t('Нажмите «Завершить» для выхода из звонка',
                                       'Press "End" to leave the call',
                                       'Қоңыраудан шығу үшін «Аяқтау» басыңыз');

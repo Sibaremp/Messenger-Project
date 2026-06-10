@@ -307,57 +307,60 @@ class _ComposeCardState extends ConsumerState<_ComposeCard> {
                 ],
               ),
               const SizedBox(height: 20),
-              Row(
+              Wrap(
+                spacing: 12,
+                runSpacing: 12,
+                crossAxisAlignment: WrapCrossAlignment.center,
                 children: [
-                  const Text('Кому: ',
-                      style: TextStyle(
-                          fontSize: 14,
-                          fontWeight: FontWeight.w500,
-                          color: Color(0xFF374151))),
-                  const SizedBox(width: 12),
-                  SegmentedButton<String>(
-                    style: SegmentedButton.styleFrom(
-                        textStyle: const TextStyle(fontSize: 13),
-                        visualDensity: VisualDensity.compact),
-                    segments: const [
-                      ButtonSegment(
-                          value: 'all',
-                          label: Text('Все'),
-                          icon: Icon(Icons.people_alt_outlined,
-                              size: 16)),
-                      ButtonSegment(
-                          value: 'students',
-                          label: Text('Студенты'),
-                          icon: Icon(Icons.school_outlined, size: 16)),
-                      ButtonSegment(
-                          value: 'teachers',
-                          label: Text('Преподаватели'),
-                          icon:
-                              Icon(Icons.person_outlined, size: 16)),
-                    ],
-                    selected: {widget.target},
-                    onSelectionChanged: (v) =>
-                        widget.onTargetChanged(v.first),
-                  ),
-                  const Spacer(),
-                  if (sendState.status == SendStatus.error)
-                    Flexible(
-                      child: Container(
-                        padding: const EdgeInsets.symmetric(
-                            horizontal: 12, vertical: 6),
-                        decoration: BoxDecoration(
-                          color: Colors.red.shade50,
-                          borderRadius: BorderRadius.circular(8),
-                          border: Border.all(
-                              color: Colors.red.shade200),
-                        ),
-                        child: Text(sendState.error ?? 'Ошибка',
-                            style: TextStyle(
-                                color: Colors.red.shade700,
-                                fontSize: 12)),
-                      ),
+                  Row(mainAxisSize: MainAxisSize.min, children: [
+                    const Text('Кому: ',
+                        style: TextStyle(
+                            fontSize: 14,
+                            fontWeight: FontWeight.w500,
+                            color: Color(0xFF374151))),
+                    SegmentedButton<String>(
+                      style: SegmentedButton.styleFrom(
+                          textStyle: const TextStyle(fontSize: 13),
+                          visualDensity: VisualDensity.compact),
+                      segments: const [
+                        ButtonSegment(
+                            value: 'all',
+                            label: Text('Все'),
+                            icon: Icon(Icons.people_alt_outlined,
+                                size: 16)),
+                        ButtonSegment(
+                            value: 'students',
+                            label: Text('Студенты'),
+                            icon:
+                                Icon(Icons.school_outlined, size: 16)),
+                        ButtonSegment(
+                            value: 'teachers',
+                            label: Text('Преподаватели'),
+                            icon:
+                                Icon(Icons.person_outlined, size: 16)),
+                      ],
+                      selected: {widget.target},
+                      onSelectionChanged: (v) =>
+                          widget.onTargetChanged(v.first),
                     ),
-                  const SizedBox(width: 12),
+                  ]),
+                  if (sendState.status == SendStatus.error)
+                    Container(
+                      constraints: const BoxConstraints(maxWidth: 320),
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 12, vertical: 6),
+                      decoration: BoxDecoration(
+                        color: Colors.red.shade50,
+                        borderRadius: BorderRadius.circular(8),
+                        border:
+                            Border.all(color: Colors.red.shade200),
+                      ),
+                      child: Text(sendState.error ?? 'Ошибка',
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                              color: Colors.red.shade700,
+                              fontSize: 12)),
+                    ),
                   SizedBox(
                     height: 42,
                     child: ElevatedButton.icon(

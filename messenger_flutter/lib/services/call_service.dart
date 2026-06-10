@@ -74,8 +74,14 @@ class CallService {
   Future<void> getUserMedia({required bool video}) async {
     // Сначала пробуем с видео (если нужно). Если не работает — пробуем только аудио.
     // На веб-браузере камера может быть не подключена или заблокирована.
+    final audioConstraints = <String, dynamic>{
+      'echoCancellation': true,
+      'noiseSuppression': true,
+      'autoGainControl': true,
+      'sampleRate': 48000,
+    };
     final constraints = <String, dynamic>{
-      'audio': true,
+      'audio': audioConstraints,
       'video': video
           ? {
               'facingMode': 'user',
@@ -225,14 +231,16 @@ class CallService {
     } catch (_) {}
   }
 
-  Future<void> toggleSpeaker() async {
+  Future<bool> toggleSpeaker() async {
     _isSpeaker = !_isSpeaker;
     try {
       // Мобильные платформы: переключаем динамик/трубку
       await Helper.setSpeakerphoneOn(_isSpeaker);
+      return true; // сработало
     } catch (_) {
       // На десктопе setSpeakerphoneOn не работает — откатываем флаг
       _isSpeaker = !_isSpeaker;
+      return false; // не поддерживается
     }
   }
 

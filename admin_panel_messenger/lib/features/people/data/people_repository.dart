@@ -38,6 +38,30 @@ class PeopleRepository {
     }
   }
 
+  Future<Person> createPerson({
+    required String firstName,
+    required String lastName,
+    String? middleName,
+    required String role,
+    String? group,
+  }) async {
+    try {
+      final response = await _apiClient.post<Map<String, dynamic>>(
+        '/api/admin/people',
+        data: {
+          'firstName':  firstName,
+          'lastName':   lastName,
+          'middleName': middleName,
+          'role':       role,
+          'group':      group,
+        },
+      );
+      return Person.fromJson(response.data!);
+    } on DioException catch (e) {
+      throw mapDioException(e);
+    }
+  }
+
   Future<Person> updatePerson(int id, {
     String? firstName,
     String? lastName,

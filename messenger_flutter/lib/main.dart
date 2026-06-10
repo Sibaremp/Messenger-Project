@@ -1,6 +1,6 @@
 import 'dart:async' show unawaited;
 import 'dart:convert';
-import 'dart:io' show Platform, File, Directory;
+import 'dart:io';
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show rootBundle;
@@ -133,7 +133,16 @@ Future<void> _applyWindowIcon() async {
   }
 }
 
+class _TrustAllCerts extends HttpOverrides {
+  @override
+  HttpClient createHttpClient(SecurityContext? context) =>
+      super.createHttpClient(context)
+        ..badCertificateCallback =
+            (X509Certificate cert, String host, int port) => true;
+}
+
 void main() async {
+  HttpOverrides.global = _TrustAllCerts();
   WidgetsFlutterBinding.ensureInitialized();
   MediaKit.ensureInitialized();
 

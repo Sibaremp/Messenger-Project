@@ -111,11 +111,15 @@ class _SettingsDialogState extends State<_SettingsDialog> {
     final bg = isDark ? const Color(0xFF1E1E1E) : Colors.white;
     final screenH = MediaQuery.of(context).size.height;
 
+    // Страница устройств шире — нужно место для карточек сессий
+    final dialogWidth = _page == _Page.sessions ? 480.0 : 360.0;
+
     return Center(
       child: Material(
         color: Colors.transparent,
-        child: Container(
-          width: 360,
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 200),
+          width: dialogWidth,
           constraints: BoxConstraints(maxHeight: screenH * 0.9),
           decoration: BoxDecoration(
             color: bg,

@@ -135,6 +135,11 @@ abstract class ChatService {
   static const int maxPinnedMessages = 5;
   Future<List<Chat>> loadChats();
 
+  /// Загружает один чат с актуальными сообщениями и статусами с сервера.
+  /// Используется при восстановлении соединения, чтобы подтянуть
+  /// пропущенные сообщения и обновлённые статусы без перезагрузки всех чатов.
+  Future<Chat?> loadSingleChat(String chatId);
+
   /// Загружает историю административных уведомлений для текущего пользователя.
   Future<List<AdminNotification>> loadAdminNotifications();
 
@@ -393,6 +398,12 @@ class LocalChatService implements ChatService {
 
   @override
   Future<List<Chat>> loadChats() async => List.unmodifiable(_chats);
+
+  @override
+  Future<Chat?> loadSingleChat(String chatId) async {
+    final idx = _idx(chatId);
+    return idx == -1 ? null : _chats[idx];
+  }
 
   @override
   Future<List<AdminNotification>> loadAdminNotifications() async => [];

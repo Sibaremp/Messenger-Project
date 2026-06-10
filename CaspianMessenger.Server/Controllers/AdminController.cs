@@ -236,6 +236,48 @@ public class AdminController(
 
     // ── 3. PEOPLE ─────────────────────────────────────────────────────────────
 
+    /// POST /api/admin/people — создать одного участника вручную
+    [HttpPost("people")]
+    [Authorize(Policy = "AdminOnly")]
+    public async Task<IActionResult> CreatePerson([FromBody] CreatePersonRequest req)
+    {
+        if (string.IsNullOrWhiteSpace(req.LastName))
+            return BadRequest(new { message = "Фамилия обязательна" });
+        if (string.IsNullOrWhiteSpace(req.FirstName))
+            return BadRequest(new { message = "Имя обязательно" });
+
+        var validRoles = new[] { "student", "teacher" };
+        var role = req.Role?.Trim().ToLowerInvariant() ?? "student";
+        if (!validRoles.Contains(role))
+            return BadRequest(new { message = "Роль должна быть student или teacher" });
+
+        var person = new CaspianMessenger.Server.Models.Person
+        {
+            LastName   = req.LastName.Trim(),
+            FirstName  = req.FirstName.Trim(),
+            MiddleName = string.IsNullOrWhiteSpace(req.MiddleName) ? null : req.MiddleName.Trim(),
+            Role       = role,
+            Group      = string.IsNullOrWhiteSpace(req.Group) ? null : req.Group.Trim(),
+        };
+
+        db.People.Add(person);
+        await db.SaveChangesAsync();
+
+        logger.LogInformation("Admin created person Id={Id} ({LastName} {FirstName})",
+            person.Id, person.LastName, person.FirstName);
+
+        return CreatedAtAction(nameof(GetPeople), new
+        {
+            id         = person.Id,
+            firstName  = person.FirstName,
+            lastName   = person.LastName,
+            middleName = person.MiddleName,
+            role       = person.Role,
+            group      = person.Group,
+            hasUser    = false,
+        });
+    }
+
     /// GET /api/admin/people?search=&role=&group=&hasUser=
     [HttpGet("people")]
     [Authorize(Policy = "AdminOnly")]
@@ -373,6 +415,15 @@ public class UpdateUserRequest
 }
 
 public class UpdatePersonRequest
+{
+    public string? FirstName  { get; set; }
+    public string? LastName   { get; set; }
+    public string? MiddleName { get; set; }
+    public string? Role       { get; set; }
+    public string? Group      { get; set; }
+}
+
+public class CreatePersonRequest
 {
     public string? FirstName  { get; set; }
     public string? LastName   { get; set; }

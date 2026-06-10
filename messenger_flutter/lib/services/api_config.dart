@@ -14,7 +14,7 @@ class ApiConfig {
   /// Туннель (ngrok, Cloudflare Tunnel и т.д.). Если задан — используется вместо локального хоста.
   /// Формат: только хост без схемы и порта, например:
   ///   `abc123.trycloudflare.com`
-  static const String? tunnelHost = 'vanilla-bands-eco-mix.trycloudflare.com';
+  static const String? tunnelHost = 'api.caspianmessenger.kz';
 
   /// Переопределение хоста (например, `192.168.1.10` для реального устройства
   /// или прод-домен). Если не установлено, используется автоопределение.

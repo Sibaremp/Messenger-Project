@@ -72,6 +72,28 @@ class PeopleNotifier extends StateNotifier<AsyncValue<List<Person>>> {
     _load();
   }
 
+  Future<Person?> createPerson({
+    required String firstName,
+    required String lastName,
+    String? middleName,
+    required String role,
+    String? group,
+  }) async {
+    try {
+      final created = await _repo.createPerson(
+        firstName: firstName,
+        lastName: lastName,
+        middleName: middleName,
+        role: role,
+        group: group,
+      );
+      state = state.whenData((list) => [...list, created]);
+      return created;
+    } catch (_) {
+      return null;
+    }
+  }
+
   Future<bool> updatePerson(
     int id, {
     String? firstName,

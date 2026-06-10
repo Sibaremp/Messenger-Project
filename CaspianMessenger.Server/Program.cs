@@ -113,6 +113,7 @@ builder.Services.AddSingleton<EncryptionService>();
 builder.Services.AddHostedService<PollAutoCloseService>();
 builder.Services.AddHostedService<SessionCleanupService>();
 builder.Services.AddHostedService<VideoThumbnailMigrationService>();
+builder.Services.AddHostedService<ChatAutoCreateService>();
 
 builder.Services.AddControllers();
 builder.Services.AddEndpointsApiExplorer();

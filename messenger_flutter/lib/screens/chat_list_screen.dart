@@ -1704,6 +1704,12 @@ class _ContactPickerScreenState extends State<_ContactPickerScreen> {
   Widget _appContactTile(AppContact contact) {
     final hasChat = _hasChat(contact.name);
     final displayName = contact.bestName;
+    final hasFullName = contact.displayName?.isNotEmpty == true;
+    // Подзаголовок: ник (если есть ФИО) · группа
+    final subtitleParts = [
+      if (hasFullName) contact.name,
+      if (contact.group != null) contact.group!,
+    ];
     return Column(
       children: [
         ListTile(
@@ -1716,10 +1722,11 @@ class _ContactPickerScreenState extends State<_ContactPickerScreen> {
             ),
           ),
           title: Text(displayName),
-          subtitle: contact.group != null
-              ? Text(contact.group!,
-                  style:
-                      const TextStyle(fontSize: 12, color: AppColors.subtle))
+          subtitle: subtitleParts.isNotEmpty
+              ? Text(
+                  subtitleParts.join(' · '),
+                  style: const TextStyle(fontSize: 12, color: AppColors.subtle),
+                )
               : null,
           trailing: hasChat ? _openBadge() : null,
           onTap: () => Navigator.of(context).pop(contact.name),

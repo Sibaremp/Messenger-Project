@@ -1,0 +1,25 @@
+# Продакшн-конфиг поверх docker-compose.yml
+# Запуск: docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+
+services:
+
+  nginx:
+    image: nginx:1.27-alpine
+    container_name: caspian_nginx
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      # Let's Encrypt сертификаты (появятся после certbot)
+      - letsencrypt:/etc/letsencrypt:ro
+    depends_on:
+      - app
+
+  app:
+    # В продакшне порт 8080 закрыт снаружи — только nginx проксирует
+    ports: !reset []
+
+volumes:
+  letsencrypt:

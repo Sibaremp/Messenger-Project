@@ -372,23 +372,28 @@ class _UsersScreenState extends ConsumerState<UsersScreen> {
           ),
         ),
         const SizedBox(width: 10),
-        Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              user.displayName,
-              style: const TextStyle(
-                  fontSize: 14,
-                  fontWeight: FontWeight.w500,
-                  color: Color(0xFF111827)),
-            ),
-            Text(
-              user.login,
-              style: const TextStyle(
-                  fontSize: 12, color: Color(0xFF9CA3AF)),
-            ),
-          ],
+        ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 180),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                user.displayName,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(
+                    fontSize: 14,
+                    fontWeight: FontWeight.w500,
+                    color: Color(0xFF111827)),
+              ),
+              Text(
+                user.login,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(
+                    fontSize: 12, color: Color(0xFF9CA3AF)),
+              ),
+            ],
+          ),
         ),
       ])),
       DataCell(_RoleBadge(role: user.role)),

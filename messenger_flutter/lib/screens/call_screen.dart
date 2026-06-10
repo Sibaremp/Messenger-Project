@@ -153,8 +153,7 @@ class _CallScreenState extends State<CallScreen>
 
   // ── Outgoing call ─────────────────────────────────────────────────────────
 
-  // ignore: avoid_print
-  void _log(String msg) => print('[CallScreen] $msg');
+  void _log(String msg) {}
 
   Future<void> _startOutgoing() async {
     setState(() => _status = CallStatus.calling);
@@ -356,9 +355,9 @@ class _CallScreenState extends State<CallScreen>
   }
 
   Future<void> _toggleSpeaker() async {
-    // На мобильных — переключаем динамик/трубку
-    // На десктопе — показываем выбор аудиовыхода
     final devices = await _callService.getAudioOutputDevices();
+
+    // Если несколько аудиовыходов — показываем пикер (десктоп / Bluetooth)
     if (devices.length > 1) {
       if (!mounted) return;
       final picked = await showModalBottomSheet<String>(
@@ -396,10 +395,25 @@ class _CallScreenState extends State<CallScreen>
         await _callService.selectAudioOutput(picked);
         setState(() => _isSpeaker = _callService.isSpeaker);
       }
-    } else {
-      // Мобильные или одно устройство — простой toggle
-      await _callService.toggleSpeaker();
+      return;
+    }
+
+    // Одно устройство или ни одного — пробуем мобильный toggle (динамик/трубка)
+    final toggled = await _callService.toggleSpeaker();
+    if (toggled) {
+      // Сработало (Android/iOS)
       setState(() => _isSpeaker = _callService.isSpeaker);
+    } else {
+      // Десктоп без выбора устройств — кнопка не меняет состояние,
+      // показываем подсказку что управление звуком через OS
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(context.l10n.audioOutputSystemManaged),
+            duration: const Duration(seconds: 2),
+          ),
+        );
+      }
     }
   }
 

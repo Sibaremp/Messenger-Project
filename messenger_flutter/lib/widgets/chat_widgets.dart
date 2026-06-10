@@ -729,9 +729,11 @@ class MessageBubble extends StatefulWidget {
   /// Путь к аватару собеседника (только для личных чатов).
   final String? interlocutorAvatarPath;
   /// Показывать ли аватар слева от чужих сообщений.
-  /// true — личный чат (аватар всегда рисуется, даже если нет фото).
-  /// false — группа/сообщество (аватар не рисуется).
+  /// true — личный чат или последнее сообщение серии в группе.
   final bool showInterlocutorAvatar;
+  /// Зарезервировать место под аватар без отображения (для выравнивания
+  /// в середине серии сообщений от одного отправителя в группе).
+  final bool reserveAvatarSpace;
   final bool isSelected;
   final bool isSelectionMode;
   final VoidCallback onLongPress;
@@ -770,6 +772,7 @@ class MessageBubble extends StatefulWidget {
     this.myAvatarPath,
     this.interlocutorAvatarPath,
     this.showInterlocutorAvatar = false,
+    this.reserveAvatarSpace = false,
     this.isSelected = false,
     this.isSelectionMode = false,
     required this.onLongPress,
@@ -1077,7 +1080,7 @@ class _MessageBubbleState extends State<MessageBubble>
                     isMe ? MainAxisAlignment.end : MainAxisAlignment.start,
                 crossAxisAlignment: CrossAxisAlignment.end,
                 children: [
-                  // Аватар собеседника: только в личном чате
+                  // Аватар слева от чужих сообщений
                   if (!isMe && showInterlocutorAvatar) ...[
                     ProfileAvatar(
                       avatarPath: widget.message.senderAvatarPath ??
@@ -1086,8 +1089,11 @@ class _MessageBubbleState extends State<MessageBubble>
                     ),
                     const SizedBox(width: 6),
                   ],
-                  // В групповых чатах отступ, чтобы пузырь не прижимался к краю
-                  if (!isMe && !showInterlocutorAvatar)
+                  // Резервируем место под аватар для выравнивания серии сообщений
+                  if (!isMe && widget.reserveAvatarSpace)
+                    const SizedBox(width: AppSizes.avatarRadiusSmall * 2 + 6),
+                  // Минимальный отступ когда аватар не нужен совсем
+                  if (!isMe && !showInterlocutorAvatar && !widget.reserveAvatarSpace)
                     const SizedBox(width: 4),
                   Flexible(
                     child: Column(
@@ -1290,21 +1296,24 @@ class _MessageBubbleState extends State<MessageBubble>
               children: [
                 ClipRRect(
                   borderRadius: BorderRadius.circular(12),
-                  child: Image.network(
-                    gifUrl,
+                  // CachedNetworkImage кэширует GIF на диск — при повторном
+                  // открытии чата анимация берётся из кэша, а не качается
+                  // заново из сети. Без этого Image.network перезагружал
+                  // GIF при каждом входе в приложение, и тот «переигрывал»
+                  // анимацию с начала — из-за чего сообщение визуально
+                  // выглядело как только что пришедшее («новое»).
+                  child: CachedNetworkImage(
+                    imageUrl: gifUrl,
                     width: gifWidth,
                     fit: BoxFit.cover,
-                    loadingBuilder: (_, child, progress) =>
-                        progress == null
-                            ? child
-                            : SizedBox(
-                                width: gifWidth,
-                                height: gifWidth * 0.7,
-                                child: const Center(
-                                  child: CircularProgressIndicator(strokeWidth: 2),
-                                ),
-                              ),
-                    errorBuilder: (_, __, ___) => SizedBox(
+                    placeholder: (_, __) => SizedBox(
+                      width: gifWidth,
+                      height: gifWidth * 0.7,
+                      child: const Center(
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      ),
+                    ),
+                    errorWidget: (_, __, ___) => SizedBox(
                       width: gifWidth,
                       height: 60,
                       child: const Center(
@@ -3542,6 +3551,11 @@ class _MediaViewerScreenState extends State<MediaViewerScreen>
   bool _isDragging = false;
   double _dragValue = 0.0;
 
+  // ── Double-tap seek indicator ─────────────────────────────────────────
+  // null = hidden; true = forward (+10s); false = backward (-10s)
+  bool? _seekIndicatorForward;
+  Timer? _seekIndicatorTimer;
+
   Attachment get _att => widget.allMedia[_currentPage];
   bool get _isVideo => _att.type == AttachmentType.video;
   bool get _hasMultiple => widget.allMedia.length > 1;
@@ -3738,6 +3752,34 @@ class _MediaViewerScreenState extends State<MediaViewerScreen>
     }
   }
 
+  /// Double-tap на левую/правую половину экрана — перемотка ±10 с.
+  void _onDoubleTap(bool forward) {
+    final seconds = forward ? 10 : -10;
+    if (_useMediaKit) {
+      final pos = _mkPlayer!.state.position;
+      final dur = _mkPlayer!.state.duration;
+      final target = Duration(
+          milliseconds: (pos.inMilliseconds + seconds * 1000)
+              .clamp(0, dur.inMilliseconds));
+      _mkPlayer!.seek(target);
+    } else if (_vpc != null && _vpc!.value.isInitialized) {
+      final pos = _vpc!.value.position;
+      final dur = _vpc!.value.duration;
+      final target = Duration(
+          milliseconds: (pos.inMilliseconds + seconds * 1000)
+              .clamp(0, dur.inMilliseconds));
+      _vpc!.seekTo(target);
+    }
+    _seekIndicatorTimer?.cancel();
+    setState(() => _seekIndicatorForward = forward);
+    _seekIndicatorTimer = Timer(const Duration(milliseconds: 800), () {
+      if (mounted) setState(() => _seekIndicatorForward = null);
+    });
+    // После перемотки показываем контролы
+    setState(() => _showControls = true);
+    _scheduleHideControls();
+  }
+
   // ── Playback ──────────────────────────────────────────────────────────
 
   void _togglePlay() {
@@ -3818,6 +3860,7 @@ class _MediaViewerScreenState extends State<MediaViewerScreen>
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    _seekIndicatorTimer?.cancel();
     _disposeVideo();
     _thumbScrollCtrl.dispose();
     if (!kIsWeb && !_isDesktop) {
@@ -4056,51 +4099,95 @@ class _MediaViewerScreenState extends State<MediaViewerScreen>
       );
     }
 
-    return GestureDetector(
-      behavior: HitTestBehavior.opaque,
-      onTap: _toggleControls,
-      child: Stack(
-        fit: StackFit.expand,
-        children: [
-          // ── Video frame ──
-          if (_useMediaKit)
-            // media_kit Video widget handles aspect ratio & surface internally
-            Video(controller: _mkController!, controls: NoVideoControls)
-          else
-            Center(
-              child: AspectRatio(
-                aspectRatio: _vpc!.value.aspectRatio,
-                child: VideoPlayer(_vpc!),
+    return Stack(
+      fit: StackFit.expand,
+      children: [
+        // ── Tap/double-tap handler ──
+        GestureDetector(
+          behavior: HitTestBehavior.opaque,
+          onTap: _toggleControls,
+          child: Stack(
+            fit: StackFit.expand,
+            children: [
+              // ── Video frame ──
+              if (_useMediaKit)
+                Video(controller: _mkController!, controls: NoVideoControls)
+              else
+                Center(
+                  child: AspectRatio(
+                    aspectRatio: _vpc!.value.aspectRatio,
+                    child: VideoPlayer(_vpc!),
+                  ),
+                ),
+
+              // ── Buffering spinner ──
+              if (_useMediaKit)
+                if (_mkPlayer!.state.buffering)
+                  const Center(child: CircularProgressIndicator(color: Colors.white70, strokeWidth: 2))
+                else
+                  const SizedBox.shrink()
+              else
+                ValueListenableBuilder<VideoPlayerValue>(
+                  valueListenable: _vpc!,
+                  builder: (_, val, __) => val.isBuffering
+                      ? const Center(
+                          child: CircularProgressIndicator(
+                              color: Colors.white70, strokeWidth: 2))
+                      : const SizedBox.shrink(),
+                ),
+
+              // ── Controls overlay (auto-hide with AnimatedOpacity) ──
+              AnimatedOpacity(
+                opacity: _showControls ? 1.0 : 0.0,
+                duration: const Duration(milliseconds: 250),
+                child: IgnorePointer(
+                  ignoring: !_showControls,
+                  child: _buildControlsOverlay(),
+                ),
+              ),
+            ],
+          ),
+        ),
+
+        // ── Double-tap зоны: левая −10с / правая +10с ──
+        if (_vpReady)
+          Row(
+            children: [
+              // Левая зона — -10 с
+              Expanded(
+                child: GestureDetector(
+                  behavior: HitTestBehavior.translucent,
+                  onDoubleTap: () => _onDoubleTap(false),
+                  child: const SizedBox.expand(),
+                ),
+              ),
+              // Правая зона — +10 с
+              Expanded(
+                child: GestureDetector(
+                  behavior: HitTestBehavior.translucent,
+                  onDoubleTap: () => _onDoubleTap(true),
+                  child: const SizedBox.expand(),
+                ),
+              ),
+            ],
+          ),
+
+        // ── Seek indicator (ripple + текст) ──
+        if (_seekIndicatorForward != null)
+          AnimatedOpacity(
+            opacity: _seekIndicatorForward != null ? 1.0 : 0.0,
+            duration: const Duration(milliseconds: 150),
+            child: Align(
+              alignment: _seekIndicatorForward!
+                  ? Alignment.centerRight
+                  : Alignment.centerLeft,
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 32),
+                child: _SeekIndicator(forward: _seekIndicatorForward!),
               ),
             ),
-
-          // ── Buffering spinner ──
-          if (_useMediaKit)
-            if (_mkPlayer!.state.buffering)
-              const Center(child: CircularProgressIndicator(color: Colors.white70, strokeWidth: 2))
-            else
-              const SizedBox.shrink()
-          else
-            ValueListenableBuilder<VideoPlayerValue>(
-              valueListenable: _vpc!,
-              builder: (_, val, __) => val.isBuffering
-                  ? const Center(
-                      child: CircularProgressIndicator(
-                          color: Colors.white70, strokeWidth: 2))
-                  : const SizedBox.shrink(),
-            ),
-
-          // ── Controls overlay (auto-hide with AnimatedOpacity) ──
-          AnimatedOpacity(
-            opacity: _showControls ? 1.0 : 0.0,
-            duration: const Duration(milliseconds: 250),
-            child: IgnorePointer(
-              ignoring: !_showControls,
-              child: _buildControlsOverlay(),
-            ),
           ),
-        ],
-      ),
+      ],
     );
   }
 
@@ -4857,6 +4944,71 @@ class _JoinPill extends StatelessWidget {
                   Icon(Icons.arrow_forward_rounded, size: 12, color: Colors.white),
                 ],
               ),
+      ),
+    );
+  }
+}
+
+// ─── Индикатор перемотки (double-tap) ────────────────────────────────────────
+
+class _SeekIndicator extends StatefulWidget {
+  final bool forward;
+  const _SeekIndicator({required this.forward});
+  @override
+  State<_SeekIndicator> createState() => _SeekIndicatorState();
+}
+
+class _SeekIndicatorState extends State<_SeekIndicator>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _ctrl;
+  late final Animation<double> _scale;
+
+  @override
+  void initState() {
+    super.initState();
+    _ctrl = AnimationController(
+        vsync: this, duration: const Duration(milliseconds: 400))
+      ..forward();
+    _scale = Tween<double>(begin: 0.7, end: 1.0).animate(
+        CurvedAnimation(parent: _ctrl, curve: Curves.easeOutBack));
+  }
+
+  @override
+  void dispose() {
+    _ctrl.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return ScaleTransition(
+      scale: _scale,
+      child: Container(
+        width: 80,
+        height: 80,
+        decoration: BoxDecoration(
+          color: Colors.black.withValues(alpha: 0.55),
+          shape: BoxShape.circle,
+        ),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(
+              widget.forward
+                  ? Icons.forward_10_rounded
+                  : Icons.replay_10_rounded,
+              color: Colors.white,
+              size: 36,
+            ),
+            Text(
+              widget.forward ? '+10с' : '−10с',
+              style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 11,
+                  fontWeight: FontWeight.w600),
+            ),
+          ],
+        ),
       ),
     );
   }

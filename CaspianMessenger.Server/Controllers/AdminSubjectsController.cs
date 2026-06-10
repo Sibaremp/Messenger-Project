@@ -234,24 +234,35 @@ public class AdminSubjectsController(
     }
 
     /// DELETE /api/admin/people/{personId}/subjects/{assignmentId}
-    /// Also deletes the associated subject community chat.
+    /// Убирает преподавателя из чата, сам чат (и студентов) оставляет.
     [HttpDelete("people/{personId:int}/subjects/{assignmentId:int}")]
     public async Task<IActionResult> RemoveAssignment(int personId, int assignmentId)
     {
         var assignment = await db.TeacherSubjectGroups
             .Include(t => t.Subject)
+            .Include(t => t.Person)
             .FirstOrDefaultAsync(t => t.Id == assignmentId && t.PersonId == personId);
         if (assignment == null) return NotFound(new { message = "Назначение не найдено" });
 
         var chatName = $"{assignment.Subject.Name} {assignment.GroupName}";
 
-        // Удаляем связанный чат
-        var chat = await db.Chats
-            .FirstOrDefaultAsync(c => c.Name == chatName && c.Type == "community");
-        if (chat != null)
+        // Только убираем преподавателя из чата, чат остаётся
+        if (assignment.Person.UserId.HasValue)
         {
-            db.Chats.Remove(chat);
-            logger.LogInformation("Removing subject chat '{Name}' (Id={Id})", chatName, chat.Id);
+            var chat = await db.Chats
+                .FirstOrDefaultAsync(c => c.Name == chatName && c.Type == "community");
+            if (chat != null)
+            {
+                var membership = await db.ChatMembers
+                    .FirstOrDefaultAsync(m => m.ChatId == chat.Id && m.UserId == assignment.Person.UserId.Value);
+                if (membership != null)
+                {
+                    db.ChatMembers.Remove(membership);
+                    logger.LogInformation(
+                        "Removed teacher {UserId} from chat '{Chat}'",
+                        assignment.Person.UserId.Value, chatName);
+                }
+            }
         }
 
         db.TeacherSubjectGroups.Remove(assignment);
@@ -259,6 +270,126 @@ public class AdminSubjectsController(
 
         logger.LogInformation("Admin removed assignment Id={Id}", assignmentId);
         return NoContent();
+    }
+
+    /// PATCH /api/admin/people/{personId}/subjects/{assignmentId}
+    /// Атомарная замена: меняет преподавателя и/или группу, обновляет членство в чатах.
+    [HttpPatch("people/{personId:int}/subjects/{assignmentId:int}")]
+    public async Task<IActionResult> UpdateAssignment(
+        int personId, int assignmentId,
+        [FromBody] UpdateAssignmentRequest req)
+    {
+        var assignment = await db.TeacherSubjectGroups
+            .Include(t => t.Subject)
+            .Include(t => t.Person)
+            .FirstOrDefaultAsync(t => t.Id == assignmentId && t.PersonId == personId);
+        if (assignment == null) return NotFound(new { message = "Назначение не найдено" });
+
+        var oldPersonId  = assignment.PersonId;
+        var oldGroupName = assignment.GroupName;
+        var newPersonId  = req.NewPersonId ?? oldPersonId;
+        var newGroupName = string.IsNullOrWhiteSpace(req.NewGroupName)
+            ? oldGroupName : req.NewGroupName.Trim();
+
+        var teacherChanged = newPersonId  != oldPersonId;
+        var groupChanged   = newGroupName != oldGroupName;
+
+        if (!teacherChanged && !groupChanged)
+            return Ok(new { message = "Изменений нет" });
+
+        // Проверяем на дубликат
+        if (await db.TeacherSubjectGroups.AnyAsync(t =>
+                t.PersonId == newPersonId && t.SubjectId == assignment.SubjectId &&
+                t.GroupName == newGroupName && t.Id != assignmentId))
+            return Conflict(new { message = "Такое назначение уже существует" });
+
+        var subjectName  = assignment.Subject.Name;
+        var oldChatName  = $"{subjectName} {oldGroupName}";
+
+        // ── Старый чат: убираем старого преподавателя ─────────────────────
+        var oldChat = await db.Chats
+            .FirstOrDefaultAsync(c => c.Name == oldChatName && c.Type == "community");
+
+        if (oldChat != null && assignment.Person.UserId.HasValue)
+        {
+            var oldMembership = await db.ChatMembers
+                .FirstOrDefaultAsync(m => m.ChatId == oldChat.Id
+                                       && m.UserId == assignment.Person.UserId.Value);
+            if (oldMembership != null) db.ChatMembers.Remove(oldMembership);
+        }
+
+        // ── Новый чат: добавляем нового преподавателя ──────────────────────
+        Person newPerson = teacherChanged
+            ? (await db.People.FindAsync(newPersonId)
+               ?? throw new InvalidOperationException("Преподаватель не найден"))
+            : assignment.Person;
+
+        User? newTeacherUser = newPerson.UserId.HasValue
+            ? await db.Users.FindAsync(newPerson.UserId.Value)
+            : null;
+
+        await EnsureTeacherInChatAsync(subjectName, newGroupName, newTeacherUser);
+
+        // ── Обновляем назначение ───────────────────────────────────────────
+        assignment.PersonId  = newPersonId;
+        assignment.GroupName = newGroupName;
+        await db.SaveChangesAsync();
+
+        logger.LogInformation(
+            "Admin updated assignment Id={Id}: person {OldP}→{NewP}, group {OldG}→{NewG}",
+            assignmentId, oldPersonId, newPersonId, oldGroupName, newGroupName);
+
+        return Ok(new
+        {
+            id         = assignment.Id,
+            personId   = assignment.PersonId,
+            groupName  = assignment.GroupName,
+            subjectId  = assignment.SubjectId
+        });
+    }
+
+    /// Добавляет преподавателя в чат предмета+группы.
+    /// Если чата нет — создаёт и добавляет в него зарегистрированных студентов.
+    private async Task EnsureTeacherInChatAsync(
+        string subjectName, string groupName, User? teacherUser)
+    {
+        var chatName = $"{subjectName} {groupName}";
+        var chat = await db.Chats
+            .FirstOrDefaultAsync(c => c.Name == chatName && c.Type == "community");
+
+        if (chat == null)
+        {
+            chat = new Chat
+            {
+                Name        = chatName,
+                Type        = "community",
+                IsAcademic  = false,
+                AdminId     = teacherUser?.Id,
+                Description = $"Предмет «{subjectName}» — группа {groupName}"
+            };
+            db.Chats.Add(chat);
+
+            var students = await db.Users
+                .Where(u => u.Group == groupName && u.Role == "student"
+                         && (teacherUser == null || u.Id != teacherUser.Id))
+                .ToListAsync();
+
+            foreach (var s in students)
+                db.ChatMembers.Add(new ChatMember
+                    { ChatId = chat.Id, UserId = s.Id, Role = "member" });
+
+            logger.LogInformation(
+                "Created subject chat '{Name}' with {N} students", chatName, students.Count);
+        }
+
+        if (teacherUser != null)
+        {
+            var already = await db.ChatMembers
+                .AnyAsync(m => m.ChatId == chat.Id && m.UserId == teacherUser.Id);
+            if (!already)
+                db.ChatMembers.Add(new ChatMember
+                    { ChatId = chat.Id, UserId = teacherUser.Id, Role = "creator" });
+        }
     }
 
     // ── Private helpers ───────────────────────────────────────────────────────
@@ -328,6 +459,8 @@ public class AdminSubjectsController(
     }
 }
 
-public class CreateSubjectRequest { public string? Name      { get; set; } }
-public class AssignSubjectRequest { public int     SubjectId { get; set; }
-                                    public string? GroupName { get; set; } }
+public class CreateSubjectRequest  { public string? Name        { get; set; } }
+public class AssignSubjectRequest  { public int     SubjectId   { get; set; }
+                                     public string? GroupName   { get; set; } }
+public class UpdateAssignmentRequest { public int?   NewPersonId  { get; set; }
+                                       public string? NewGroupName { get; set; } }

@@ -374,39 +374,37 @@ class _DevicesScreenState extends State<DevicesScreen> {
               s.isCurrent ? _logoutCurrent : null,
         )),
 
-        // «Выйти со всех устройств» — только на мобильных
-        if (_isMobile) ...[
-          const SizedBox(height: 28),
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 16),
-            child: SizedBox(
-              width: double.infinity,
-              height: 50,
-              child: OutlinedButton.icon(
-                onPressed: _terminateAll,
-                icon: const Icon(Icons.logout, color: Colors.red),
-                label: Text(
-                  context.l10n.logoutAllDevices,
-                  style: const TextStyle(
-                      color: Colors.red, fontWeight: FontWeight.w600),
-                ),
-                style: OutlinedButton.styleFrom(
-                  side: const BorderSide(color: Colors.red),
-                  shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(12)),
-                ),
+        // «Выйти со всех устройств» — доступно на всех платформах
+        const SizedBox(height: 28),
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16),
+          child: SizedBox(
+            width: double.infinity,
+            height: 50,
+            child: OutlinedButton.icon(
+              onPressed: _terminateAll,
+              icon: const Icon(Icons.logout, color: Colors.red),
+              label: Text(
+                context.l10n.logoutAllDevices,
+                style: const TextStyle(
+                    color: Colors.red, fontWeight: FontWeight.w600),
+              ),
+              style: OutlinedButton.styleFrom(
+                side: const BorderSide(color: Colors.red),
+                shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(12)),
               ),
             ),
           ),
-          Padding(
-            padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
-            child: Text(
-              context.l10n.logoutAllHint,
-              style: const TextStyle(fontSize: 12, color: AppColors.subtle),
-              textAlign: TextAlign.center,
-            ),
+        ),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
+          child: Text(
+            context.l10n.logoutAllHint,
+            style: const TextStyle(fontSize: 12, color: AppColors.subtle),
+            textAlign: TextAlign.center,
           ),
-        ],
+        ),
       ],
     );
   }

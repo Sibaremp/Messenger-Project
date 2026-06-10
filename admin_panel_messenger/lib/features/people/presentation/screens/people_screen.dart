@@ -121,7 +121,7 @@ class _PeopleScreenState extends ConsumerState<PeopleScreen> {
       child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            // Строка 1: заголовок + кнопка
+            // Строка 1: заголовок + кнопки
             Row(children: [
               const Text('Участники',
                   style: TextStyle(
@@ -140,6 +140,22 @@ class _PeopleScreenState extends ConsumerState<PeopleScreen> {
                   padding: const EdgeInsets.symmetric(
                       horizontal: 14, vertical: 10),
                   side: BorderSide(color: Colors.grey.shade300),
+                ),
+              ),
+              const SizedBox(width: 10),
+              ElevatedButton.icon(
+                onPressed: () => _showCreateDialog(context),
+                icon: const Icon(Icons.person_add_outlined, size: 16),
+                label: const Text('Добавить участника',
+                    style: TextStyle(fontSize: 13)),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFF1E3A5F),
+                  foregroundColor: Colors.white,
+                  padding: const EdgeInsets.symmetric(
+                      horizontal: 16, vertical: 10),
+                  shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(8)),
+                  elevation: 0,
                 ),
               ),
             ]),
@@ -483,6 +499,172 @@ class _PeopleScreenState extends ConsumerState<PeopleScreen> {
         ),
       ),
     );
+  }
+
+  // ── Create dialog ─────────────────────────────────────────────────────────
+
+  Future<void> _showCreateDialog(BuildContext context) async {
+    final lastCtrl    = TextEditingController();
+    final firstCtrl   = TextEditingController();
+    final middleCtrl  = TextEditingController();
+    final groupCtrl   = TextEditingController();
+    String selectedRole = 'student';
+    final formKey = GlobalKey<FormState>();
+    bool saving = false;
+
+    await showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => StatefulBuilder(builder: (ctx, setDlg) {
+        return AlertDialog(
+          shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(16)),
+          title: const Row(children: [
+            Icon(Icons.person_add_outlined, color: Color(0xFF1E3A5F)),
+            SizedBox(width: 10),
+            Text('Новый участник', style: TextStyle(fontSize: 16)),
+          ]),
+          content: Form(
+            key: formKey,
+            child: SizedBox(
+              width: 440,
+              child: Column(mainAxisSize: MainAxisSize.min, children: [
+                Row(children: [
+                  Expanded(
+                    child: TextFormField(
+                      controller: lastCtrl,
+                      decoration: InputDecoration(
+                        labelText: 'Фамилия *',
+                        prefixIcon:
+                            const Icon(Icons.person_outline, size: 20),
+                        border: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(10)),
+                        contentPadding: const EdgeInsets.symmetric(
+                            horizontal: 14, vertical: 12),
+                      ),
+                      style: const TextStyle(fontSize: 14),
+                      validator: (v) => (v == null || v.trim().isEmpty)
+                          ? 'Введите фамилию'
+                          : null,
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: TextFormField(
+                      controller: firstCtrl,
+                      decoration: InputDecoration(
+                        labelText: 'Имя *',
+                        prefixIcon:
+                            const Icon(Icons.person_outline, size: 20),
+                        border: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(10)),
+                        contentPadding: const EdgeInsets.symmetric(
+                            horizontal: 14, vertical: 12),
+                      ),
+                      style: const TextStyle(fontSize: 14),
+                      validator: (v) => (v == null || v.trim().isEmpty)
+                          ? 'Введите имя'
+                          : null,
+                    ),
+                  ),
+                ]),
+                const SizedBox(height: 14),
+                _DialogField(
+                    controller: middleCtrl,
+                    label: 'Отчество (необязательно)',
+                    icon: Icons.person_outline),
+                const SizedBox(height: 14),
+                DropdownButtonFormField<String>(
+                  initialValue: selectedRole,
+                  decoration: InputDecoration(
+                    labelText: 'Роль',
+                    prefixIcon:
+                        const Icon(Icons.badge_outlined, size: 20),
+                    border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(10)),
+                    contentPadding: const EdgeInsets.symmetric(
+                        horizontal: 14, vertical: 12),
+                  ),
+                  items: const [
+                    DropdownMenuItem(
+                        value: 'student', child: Text('Студент')),
+                    DropdownMenuItem(
+                        value: 'teacher',
+                        child: Text('Преподаватель')),
+                  ],
+                  onChanged: saving
+                      ? null
+                      : (v) => setDlg(() => selectedRole = v!),
+                ),
+                const SizedBox(height: 14),
+                _DialogField(
+                    controller: groupCtrl,
+                    label: 'Группа (необязательно)',
+                    icon: Icons.group_outlined),
+              ]),
+            ),
+          ),
+          actions: [
+            TextButton(
+                onPressed: saving ? null : () => Navigator.pop(ctx),
+                child: const Text('Отмена')),
+            ElevatedButton(
+              onPressed: saving
+                  ? null
+                  : () async {
+                      if (!formKey.currentState!.validate()) return;
+                      setDlg(() => saving = true);
+
+                      final created = await ref
+                          .read(peopleProvider.notifier)
+                          .createPerson(
+                            firstName: firstCtrl.text.trim(),
+                            lastName: lastCtrl.text.trim(),
+                            middleName: middleCtrl.text.trim().isEmpty
+                                ? null
+                                : middleCtrl.text.trim(),
+                            role: selectedRole,
+                            group: groupCtrl.text.trim().isEmpty
+                                ? null
+                                : groupCtrl.text.trim(),
+                          );
+
+                      if (!ctx.mounted) return;
+                      Navigator.pop(ctx);
+
+                      if (mounted) {
+                        _showSnack(
+                          context,
+                          created != null
+                              ? '${created.fullName} добавлен'
+                              : 'Ошибка при создании участника',
+                          created != null,
+                        );
+                      }
+                    },
+              style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFF1E3A5F),
+                foregroundColor: Colors.white,
+                shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(8)),
+              ),
+              child: saving
+                  ? const SizedBox(
+                      width: 18,
+                      height: 18,
+                      child: CircularProgressIndicator(
+                          strokeWidth: 2, color: Colors.white))
+                  : const Text('Создать'),
+            ),
+          ],
+        );
+      }),
+    );
+
+    lastCtrl.dispose();
+    firstCtrl.dispose();
+    middleCtrl.dispose();
+    groupCtrl.dispose();
   }
 
   // ── Edit dialog ──────────────────────────────────────────────────────────

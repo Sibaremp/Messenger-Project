@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:http/http.dart' as http;
 import 'package:http_parser/http_parser.dart' show MediaType;
 import 'package:signalr_netcore/signalr_client.dart';
@@ -103,6 +104,19 @@ class ApiChatService implements ChatService {
       _hub!.on('ReceiveEvent', _onHubEvent);
       _hub!.onclose(({error}) => _scheduleReconnect());
 
+      // После автоматического переподключения (withAutomaticReconnect)
+      // start().then() НЕ вызывается повторно — только onreconnected.
+      // Без обновления ключей шифрования все входящие сообщения перестают
+      // расшифровываться и тихо глотаются в catch. Исправляем:
+      _hub!.onreconnected(({connectionId}) async {
+        if (_disposed) return;
+        // Заново обмениваемся ключами — сервер сбросил старые при переподключении.
+        await EncryptionService.instance.initAndExchange(_base, _headers);
+        // Оповещаем UI: список чатов и открытый чат должны подтянуть
+        // пропущенные сообщения и актуальные статусы.
+        _eventController.add(ConnectionRestored());
+      });
+
       _hub!.start()?.then((_) async {
         if (_disposed) return;
         // Выполняем обмен ключами Диффи-Хеллмана (X25519) для шифрования сообщений.
@@ -127,17 +141,38 @@ class ApiChatService implements ChatService {
     _processHubEvent(args); // fire-and-forget: async расшифровка не блокирует
   }
 
+  /// Безопасно извлекает Map из первого аргумента SignalR.
+  /// signalr_netcore на разных платформах может вернуть Map<String,Object?>
+  /// вместо Map<String,dynamic> — обрабатываем оба варианта.
+  static Map<String, dynamic>? _extractEventData(List<Object?>? args) {
+    final raw = args?.firstOrNull;
+    if (raw == null) return null;
+    if (raw is Map<String, dynamic>) return raw;
+    if (raw is Map) return Map<String, dynamic>.from(raw);
+    return null;
+  }
+
+  /// Безопасно приводит значение Map к Map<String,dynamic>.
+  static Map<String, dynamic>? _toMap(dynamic val) {
+    if (val == null) return null;
+    if (val is Map<String, dynamic>) return val;
+    if (val is Map) return Map<String, dynamic>.from(val);
+    return null;
+  }
+
   Future<void> _processHubEvent(List<Object?>? args) async {
     try {
-      final data = args?.first as Map<String, dynamic>?;
+      final data = _extractEventData(args);
       if (data == null) return;
-      final type = data['type'] as String;
+      final type = data['type'] as String? ?? '';
       switch (type) {
         case 'message_received':
-          final chatId  = data['chatId'] as String;
-          var msgData   = data['message'] as Map<String, dynamic>;
+          final chatId  = data['chatId']?.toString() ?? '';
+          final rawMsgData = _toMap(data['message']);
+          if (rawMsgData == null) return;
+          var msgData = rawMsgData;
           // Расшифровываем текст сообщения
-          final rawText = msgData['text'] as String? ?? '';
+          final rawText = msgData['text']?.toString() ?? '';
           final plain   = await EncryptionService.instance.decryptText(rawText);
           msgData = Map<String, dynamic>.from(msgData)..['text'] = plain;
           final msg = Message.fromJson(msgData, currentUserId: _uid);
@@ -202,7 +237,10 @@ class ApiChatService implements ChatService {
         case 'message_status':
           // Сервер шлёт "sent" / "delivered" / "read"; если прилетит что-то
           // неожиданное — молча игнорируем, не валим поток.
-          final statusStr = data['status'] as String? ?? 'sent';
+          final statusStr = data['status']?.toString() ?? 'sent';
+          final statusChatId = data['chatId']?.toString() ?? '';
+          final statusMsgId  = data['messageId']?.toString() ?? '';
+          if (statusChatId.isEmpty || statusMsgId.isEmpty) return;
           MessageStatus parsed;
           try {
             parsed = MessageStatus.values.byName(statusStr);
@@ -210,13 +248,15 @@ class ApiChatService implements ChatService {
             parsed = MessageStatus.sent;
           }
           _eventController.add(MessageStatusChanged(
-            data['chatId'] as String,
-            data['messageId'] as String,
+            statusChatId,
+            statusMsgId,
             parsed,
           ));
       }
-    } catch (_) {
-      // Некорректный пакет — игнорируем
+    } catch (e, st) {
+      // Некорректный пакет — логируем, но не роняем соединение.
+      // ignore: avoid_print
+      print('[SignalR] _processHubEvent error: $e\n$st');
     }
   }
 
@@ -234,6 +274,16 @@ class ApiChatService implements ChatService {
     final list  = await _getList('/chats');
     final chats = list.map((j) => _chatFromJson(j as Map<String, dynamic>)).toList();
     return Future.wait(chats.map(_decryptChat));
+  }
+
+  @override
+  Future<Chat?> loadSingleChat(String chatId) async {
+    try {
+      final data = await _get('/chats/$chatId');
+      return _decryptChat(_chatFromJson(data));
+    } catch (_) {
+      return null;
+    }
   }
 
   /// Расшифровывает текст всех сообщений в чате.
@@ -355,23 +405,47 @@ class ApiChatService implements ChatService {
   /// Из абсолютного URL извлекается **только путь** (`/uploads/audio/uuid.ext`),
   /// который сохраняется в БД. Это позволяет корректно загружать аудио
   /// на любом устройстве (включая реальные телефоны, не только эмулятор).
+  ///
+  /// На вебе [src.path] — это blob URL (`blob:https://...`), возвращённый
+  /// пакетом `record` после остановки записи. Мы читаем его через HTTP GET
+  /// (браузер разрешает fetch к blob того же origin) и загружаем байтами.
   Future<Attachment> _uploadAudio(Attachment src) async {
-    final file = File(src.path);
-    if (!await file.exists()) {
-      throw ApiException('Файл не найден: ${src.path}', 0);
-    }
+    final http.MultipartFile multipartFile;
+    int fileSize;
 
-    final fileSize = await file.length();
+    if (kIsWeb) {
+      // На вебе src.path — blob URL; File() недоступен, читаем через HTTP.
+      final blobResp = await http.get(Uri.parse(src.path));
+      if (blobResp.statusCode != 200) {
+        throw ApiException('Не удалось прочитать аудио-blob: ${blobResp.statusCode}', 0);
+      }
+      final bytes = blobResp.bodyBytes;
+      fileSize = bytes.length;
+      // Имя файла на вебе — voice_<ts>.webm (задаётся в AudioService)
+      final fileName = src.fileName.isNotEmpty ? src.fileName : 'voice.webm';
+      multipartFile = http.MultipartFile.fromBytes(
+        'file', bytes,
+        filename: fileName,
+        contentType: _audioMimeType(fileName),
+      );
+    } else {
+      final file = File(src.path);
+      if (!await file.exists()) {
+        throw ApiException('Файл не найден: ${src.path}', 0);
+      }
+      fileSize = await file.length();
+      multipartFile = await http.MultipartFile.fromPath(
+        'file', file.path,
+        filename: src.fileName,
+        contentType: _audioMimeType(src.fileName),
+      );
+    }
 
     final req = http.MultipartRequest(
       'POST', Uri.parse(ApiConfig.audioUploadUrl),
     )
       ..headers.addAll(_headers)
-      ..files.add(await http.MultipartFile.fromPath(
-        'file', file.path,
-        filename: src.fileName,
-        contentType: _audioMimeType(src.fileName),
-      ));
+      ..files.add(multipartFile);
     final streamed = await req.send().timeout(const Duration(minutes: 5));
     final resp = await http.Response.fromStream(streamed);
     if (resp.statusCode < 200 || resp.statusCode >= 300) {
@@ -407,6 +481,7 @@ class ApiChatService implements ChatService {
       'aac'  => MediaType('audio', 'aac'),
       'm4a'  => MediaType('audio', 'x-m4a'),   // AAC в контейнере MPEG-4
       'flac' => MediaType('audio', 'flac'),
+      'webm' => MediaType('audio', 'webm'),     // Запись с веб-браузера (MediaRecorder API)
       _      => MediaType('audio', 'mp4'),
     };
   }

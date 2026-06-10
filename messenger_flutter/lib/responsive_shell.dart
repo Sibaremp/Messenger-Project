@@ -919,13 +919,15 @@ class _SimpleContactPicker extends StatefulWidget {
 
 class _SimpleContactPickerState extends State<_SimpleContactPicker> {
   final _searchController = TextEditingController();
+  final _searchFocus = FocusNode();
   String _query = '';
 
   bool get _showTeachers => widget.initialTab == 1;
 
   static const _avatarColors = [
-    Color(0xFFE57373), Color(0xFF81C784), Color(0xFF64B5F6), Color(0xFFFFB74D),
-    Color(0xFFBA68C8), Color(0xFF4DD0E1), Color(0xFFF06292), Color(0xFFAED581),
+    Color(0xFF5C6BC0), Color(0xFF26A69A), Color(0xFF42A5F5), Color(0xFFEF5350),
+    Color(0xFFAB47BC), Color(0xFF26C6DA), Color(0xFFEC407A), Color(0xFF66BB6A),
+    Color(0xFFFFA726), Color(0xFF8D6E63),
   ];
 
   Color _colorFor(String name) {
@@ -939,17 +941,24 @@ class _SimpleContactPickerState extends State<_SimpleContactPicker> {
   List<AppContact> get _filtered {
     var list = widget.contacts.where((c) => c.isTeacher == _showTeachers);
     if (_query.isNotEmpty) {
-      final q = _query.toLowerCase();
-      list = list.where((c) =>
-          c.name.toLowerCase().contains(q) ||
-          (c.group?.toLowerCase().contains(q) ?? false));
+      final q = _query.toLowerCase().trim();
+      list = list.where((c) {
+        if (c.name.toLowerCase().contains(q)) return true;
+        if (c.displayName?.toLowerCase().contains(q) ?? false) return true;
+        if (c.group?.toLowerCase().contains(q) ?? false) return true;
+        return false;
+      });
     }
-    return list.toList();
+    // Сортируем по ФИО/логину
+    final result = list.toList()
+      ..sort((a, b) => a.bestName.toLowerCase().compareTo(b.bestName.toLowerCase()));
+    return result;
   }
 
   @override
   void dispose() {
     _searchController.dispose();
+    _searchFocus.dispose();
     super.dispose();
   }
 
@@ -964,93 +973,162 @@ class _SimpleContactPickerState extends State<_SimpleContactPicker> {
   @override
   Widget build(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
+    final primary = Theme.of(context).colorScheme.primary;
+    final filtered = _filtered;
 
     return Scaffold(
-      appBar: AppBar(
-        backgroundColor: isDark ? const Color(0xFF1E1E1E) : Colors.white,
-        foregroundColor: isDark ? Colors.white : Colors.black87,
-        surfaceTintColor: Colors.transparent,
-        elevation: 0.5,
-        automaticallyImplyLeading: !widget.embedded,
-        leading: widget.embedded
-            ? IconButton(icon: const Icon(Icons.arrow_back), onPressed: widget.onBack)
-            : null,
-        title: Text(
-          _showTeachers ? context.l10n.teachersTitle : context.l10n.newChatDesktop,
-          style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w600)),
-        bottom: PreferredSize(
-          preferredSize: const Size.fromHeight(56),
-          child: Padding(
-            padding: const EdgeInsets.fromLTRB(12, 0, 12, 8),
-            child: TextField(
-              controller: _searchController,
-              onChanged: (v) => setState(() => _query = v),
-              decoration: InputDecoration(
-                hintText: _showTeachers ? context.l10n.teachersSearch : context.l10n.studentsSearch,
-                hintStyle: TextStyle(
-                    color: isDark ? Colors.white38 : Colors.black38),
-                prefixIcon: Icon(Icons.search,
-                    color: isDark ? Colors.white38 : Colors.black38),
-                suffixIcon: _query.isNotEmpty
-                    ? IconButton(
-                        icon: Icon(Icons.clear,
-                            color: isDark ? Colors.white54 : Colors.black45),
-                        onPressed: () {
-                          _searchController.clear();
-                          setState(() => _query = '');
-                        },
-                      )
-                    : null,
-                filled: true,
-                fillColor: isDark
-                    ? Colors.white.withValues(alpha: 0.07)
-                    : const Color(0xFFF2F2F2),
-                contentPadding: const EdgeInsets.symmetric(vertical: 0),
-                border: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(12),
-                  borderSide: BorderSide.none,
+      backgroundColor: isDark ? const Color(0xFF141414) : const Color(0xFFF7F7F7),
+      body: Column(
+        children: [
+          // ── Шапка ──────────────────────────────────────────────────────
+          Container(
+            padding: EdgeInsets.only(
+              top: widget.embedded ? 12 : MediaQuery.of(context).padding.top + 12,
+              left: 16, right: 16, bottom: 12,
+            ),
+            decoration: BoxDecoration(
+              color: isDark ? const Color(0xFF1C1C1C) : Colors.white,
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withValues(alpha: isDark ? 0.3 : 0.06),
+                  blurRadius: 8, offset: const Offset(0, 2),
                 ),
-              ),
+              ],
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    if (widget.embedded)
+                      IconButton(
+                        icon: Icon(Icons.arrow_back_ios_new,
+                            size: 18, color: isDark ? Colors.white70 : Colors.black54),
+                        onPressed: widget.onBack,
+                        padding: const EdgeInsets.only(right: 8),
+                        constraints: const BoxConstraints(),
+                      ),
+                    Expanded(
+                      child: Text(
+                        _showTeachers ? context.l10n.teachersTitle : context.l10n.newChatDesktop,
+                        style: TextStyle(
+                          fontSize: 20, fontWeight: FontWeight.w700,
+                          color: isDark ? Colors.white : Colors.black87,
+                        ),
+                      ),
+                    ),
+                    // Счётчик контактов
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
+                      decoration: BoxDecoration(
+                        color: primary.withValues(alpha: 0.12),
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      child: Text(
+                        '${filtered.length}',
+                        style: TextStyle(fontSize: 13, color: primary, fontWeight: FontWeight.w600),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 12),
+                // ── Поиск ───────────────────────────────────────────────
+                TextField(
+                  controller: _searchController,
+                  focusNode: _searchFocus,
+                  onChanged: (v) => setState(() => _query = v),
+                  style: TextStyle(fontSize: 15, color: isDark ? Colors.white : Colors.black87),
+                  decoration: InputDecoration(
+                    hintText: 'Поиск по имени, нику или группе...',
+                    hintStyle: TextStyle(
+                      color: isDark ? Colors.white30 : Colors.black38, fontSize: 14),
+                    prefixIcon: Icon(Icons.search_rounded,
+                        color: isDark ? Colors.white38 : Colors.black38, size: 20),
+                    suffixIcon: _query.isNotEmpty
+                        ? IconButton(
+                            icon: Icon(Icons.close_rounded,
+                                color: isDark ? Colors.white54 : Colors.black45, size: 18),
+                            onPressed: () {
+                              _searchController.clear();
+                              setState(() => _query = '');
+                              _searchFocus.requestFocus();
+                            },
+                          )
+                        : null,
+                    filled: true,
+                    fillColor: isDark
+                        ? Colors.white.withValues(alpha: 0.06)
+                        : const Color(0xFFF0F0F0),
+                    contentPadding: const EdgeInsets.symmetric(vertical: 10, horizontal: 4),
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(14),
+                      borderSide: BorderSide.none,
+                    ),
+                    focusedBorder: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(14),
+                      borderSide: BorderSide(color: primary.withValues(alpha: 0.5), width: 1.5),
+                    ),
+                  ),
+                ),
+              ],
             ),
           ),
-        ),
-      ),
-      body: _buildContactList(
-        _filtered, isDark,
-        _showTeachers ? context.l10n.noTeachers : context.l10n.noStudents,
+
+          // ── Список ─────────────────────────────────────────────────────
+          Expanded(
+            child: _buildContactList(filtered, isDark, primary),
+          ),
+        ],
       ),
     );
   }
 
-  Widget _buildContactList(List<AppContact> filtered, bool isDark, String emptyText) {
+  Widget _buildContactList(List<AppContact> filtered, bool isDark, Color primary) {
     if (filtered.isEmpty) {
       return Center(
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(Icons.person_search, size: 56,
-                color: isDark ? Colors.white24 : Colors.black26),
-            const SizedBox(height: 12),
-            Text(
-              _query.isEmpty ? emptyText : context.l10n.nothingFound,
-              style: TextStyle(
-                color: isDark ? Colors.white38 : Colors.black38, fontSize: 15),
+            Container(
+              width: 80, height: 80,
+              decoration: BoxDecoration(
+                color: isDark ? Colors.white.withValues(alpha: 0.05) : Colors.black.withValues(alpha: 0.04),
+                shape: BoxShape.circle,
+              ),
+              child: Icon(Icons.person_search_rounded, size: 40,
+                  color: isDark ? Colors.white24 : Colors.black26),
             ),
+            const SizedBox(height: 16),
+            Text(
+              _query.isEmpty
+                  ? (_showTeachers ? context.l10n.noTeachers : context.l10n.noStudents)
+                  : 'Никого не найдено',
+              style: TextStyle(
+                color: isDark ? Colors.white38 : Colors.black38,
+                fontSize: 15, fontWeight: FontWeight.w500),
+            ),
+            if (_query.isNotEmpty) ...[
+              const SizedBox(height: 6),
+              Text(
+                'Попробуй другой запрос',
+                style: TextStyle(color: isDark ? Colors.white24 : Colors.black26, fontSize: 13),
+              ),
+            ],
           ],
         ),
       );
     }
 
-    // Группируем по первой букве
+    // Группируем по первой букве ФИО/логина
     final grouped = <String, List<AppContact>>{};
     for (final c in filtered) {
-      final letter = c.name.isNotEmpty ? c.name[0].toUpperCase() : '#';
+      final letter = c.bestName.isNotEmpty ? c.bestName[0].toUpperCase() : '#';
       grouped.putIfAbsent(letter, () => []).add(c);
     }
     final sortedKeys = grouped.keys.toList()..sort();
 
     return ListView.builder(
-      padding: const EdgeInsets.only(top: 4, bottom: 16),
+      padding: const EdgeInsets.only(top: 8, bottom: 24),
       itemCount: sortedKeys.length,
       itemBuilder: (context, sectionIndex) {
         final letter = sortedKeys[sectionIndex];
@@ -1059,67 +1137,100 @@ class _SimpleContactPickerState extends State<_SimpleContactPicker> {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Padding(
-              padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
-              child: Text(letter, style: TextStyle(
-                fontSize: 13, fontWeight: FontWeight.w700,
-                color: Theme.of(context).colorScheme.primary, letterSpacing: 0.5)),
+              padding: const EdgeInsets.fromLTRB(20, 16, 20, 6),
+              child: Text(
+                letter,
+                style: TextStyle(
+                  fontSize: 12, fontWeight: FontWeight.w700,
+                  color: primary, letterSpacing: 1.0),
+              ),
             ),
             ...contacts.map((c) {
               final color = _colorFor(c.name);
               final hasChat = _hasChat(c.name);
-              return Material(
-                color: Colors.transparent,
-                child: InkWell(
-                  onTap: () => _select(c),
-                  borderRadius: BorderRadius.circular(12),
-                  child: Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
-                    child: Row(children: [
-                      CircleAvatar(
-                        radius: 22,
-                        backgroundColor: color.withValues(alpha: 0.18),
-                        child: Text(
-                          c.name.isNotEmpty ? c.name[0].toUpperCase() : '?',
-                          style: TextStyle(color: color,
-                              fontWeight: FontWeight.bold, fontSize: 16),
-                        ),
-                      ),
-                      const SizedBox(width: 12),
-                      Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
+              final displayName = c.bestName;
+              final hasFullName = c.displayName?.isNotEmpty == true;
+              final subtitle = [
+                if (hasFullName) c.name,
+                if (c.group != null) c.group!,
+              ].join(' · ');
+
+              return Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 8),
+                child: Material(
+                  color: Colors.transparent,
+                  borderRadius: BorderRadius.circular(14),
+                  child: InkWell(
+                    onTap: () => _select(c),
+                    borderRadius: BorderRadius.circular(14),
+                    hoverColor: primary.withValues(alpha: 0.06),
+                    splashColor: primary.withValues(alpha: 0.08),
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                      child: Row(children: [
+                        // Аватар с индикатором онлайн
+                        Stack(
                           children: [
-                            Text(c.name, style: TextStyle(
-                              fontWeight: FontWeight.w600, fontSize: 15,
-                              color: isDark ? Colors.white : Colors.black87)),
-                            if (c.group != null)
-                              Text(c.group!, style: TextStyle(
-                                fontSize: 13,
-                                color: isDark ? Colors.white54 : Colors.black45)),
-                          ],
+                            CircleAvatar(
+                              radius: 24,
+                              backgroundColor: color.withValues(alpha: 0.18),
+                              child: Text(
+                                displayName.isNotEmpty ? displayName[0].toUpperCase() : '?',
+                                style: TextStyle(
+                                  color: color, fontWeight: FontWeight.bold, fontSize: 18),
+                              ),
+                            ),
+                                  ],
                         ),
-                      ),
-                      if (hasChat)
-                        Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                          decoration: BoxDecoration(
-                            color: Theme.of(context).colorScheme.primary.withValues(alpha: 0.12),
-                            borderRadius: BorderRadius.circular(10)),
-                          child: Text(context.l10n.openContact, style: TextStyle(
-                            fontSize: 12, color: Theme.of(context).colorScheme.primary,
-                            fontWeight: FontWeight.w600)),
+                        const SizedBox(width: 14),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                displayName,
+                                style: TextStyle(
+                                  fontWeight: FontWeight.w600, fontSize: 15,
+                                  color: isDark ? Colors.white : Colors.black87),
+                                maxLines: 1, overflow: TextOverflow.ellipsis,
+                              ),
+                              if (subtitle.isNotEmpty)
+                                const SizedBox(height: 2),
+                              if (subtitle.isNotEmpty)
+                                Text(
+                                  subtitle,
+                                  style: TextStyle(
+                                    fontSize: 13,
+                                    color: isDark ? Colors.white54 : Colors.black45),
+                                  maxLines: 1, overflow: TextOverflow.ellipsis,
+                                ),
+                            ],
+                          ),
                         ),
-                    ]),
+                        const SizedBox(width: 8),
+                        if (hasChat)
+                          Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                            decoration: BoxDecoration(
+                              color: primary.withValues(alpha: 0.12),
+                              borderRadius: BorderRadius.circular(10),
+                            ),
+                            child: Text(
+                              context.l10n.openContact,
+                              style: TextStyle(
+                                fontSize: 12, color: primary, fontWeight: FontWeight.w600),
+                            ),
+                          )
+                        else
+                          Icon(Icons.chevron_right_rounded,
+                              color: isDark ? Colors.white24 : Colors.black26, size: 20),
+                      ]),
+                    ),
                   ),
                 ),
               );
             }),
-            if (sectionIndex < sortedKeys.length - 1)
-              Padding(
-                padding: const EdgeInsets.only(left: 60, right: 16),
-                child: Divider(height: 1,
-                    color: isDark ? Colors.white10 : Colors.black.withValues(alpha: 0.06)),
-              ),
+            const SizedBox(height: 4),
           ],
         );
       },

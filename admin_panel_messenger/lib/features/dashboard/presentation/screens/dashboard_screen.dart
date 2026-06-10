@@ -11,6 +11,52 @@ import '../../../../shared/models/subject.dart';
 
 // ── Data models ───────────────────────────────────────────────────────────────
 
+/// На широких экранах раскладывает детей в ряд (с заданными flex-весами),
+/// на узких — переключается в колонку (для мобильного браузера/окна).
+class _ResponsiveRow extends StatelessWidget {
+  final List<Widget> children;
+  final List<int>? flexes;
+  final double spacing;
+  final double breakpoint;
+
+  const _ResponsiveRow({
+    required this.children,
+    this.flexes,
+    this.spacing = 16,
+    this.breakpoint = 720,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return LayoutBuilder(builder: (context, constraints) {
+      final narrow = constraints.maxWidth < breakpoint;
+      if (narrow) {
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            for (var i = 0; i < children.length; i++) ...[
+              if (i > 0) SizedBox(height: spacing),
+              children[i],
+            ],
+          ],
+        );
+      }
+      return Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          for (var i = 0; i < children.length; i++) ...[
+            if (i > 0) SizedBox(width: spacing),
+            Expanded(
+              flex: flexes != null ? flexes![i] : 1,
+              child: children[i],
+            ),
+          ],
+        ],
+      );
+    });
+  }
+}
+
 class _DashboardStats {
   final int people;
   final int students;
@@ -234,62 +280,48 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
           const SizedBox(height: 16),
 
           // Real statistics row
-          Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
+          _ResponsiveRow(
+            spacing: 16,
             children: [
-              Expanded(
-                flex: 2,
-                child: _CompositionCard(stats: stats),
-              ),
-              const SizedBox(width: 16),
-              Expanded(
-                flex: 3,
-                child: _TopSubjectsCard(subjects: stats.topSubjects),
-              ),
+              _CompositionCard(stats: stats),
+              _TopSubjectsCard(subjects: stats.topSubjects),
             ],
+            flexes: const [2, 3],
           ),
           const SizedBox(height: 16),
 
           // Real statistics row (from API)
-          Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
+          _ResponsiveRow(
+            spacing: 16,
             children: [
-              Expanded(
-                child: ref.watch(_activityProvider).when(
-                  data: (pts) => _ActivityCard(points: pts),
-                  loading: () => const _StatsCardSkeleton(height: 200),
-                  error: (e, _) => _StatsCardError(
-                    title: 'Активность пользователей',
-                    icon: Icons.bar_chart_rounded,
-                    error: e.toString(),
-                    onRetry: () => ref.invalidate(_activityProvider),
-                  ),
+              ref.watch(_activityProvider).when(
+                data: (pts) => _ActivityCard(points: pts),
+                loading: () => const _StatsCardSkeleton(height: 200),
+                error: (e, _) => _StatsCardError(
+                  title: 'Активность пользователей',
+                  icon: Icons.bar_chart_rounded,
+                  error: e.toString(),
+                  onRetry: () => ref.invalidate(_activityProvider),
                 ),
               ),
-              const SizedBox(width: 16),
-              Expanded(
-                child: ref.watch(_notifStatsProvider).when(
-                  data: (weeks) => _NotificationsCard(weeks: weeks),
-                  loading: () => const _StatsCardSkeleton(height: 200),
-                  error: (e, _) => _StatsCardError(
-                    title: 'Уведомления',
-                    icon: Icons.notifications_active_rounded,
-                    error: e.toString(),
-                    onRetry: () => ref.invalidate(_notifStatsProvider),
-                  ),
+              ref.watch(_notifStatsProvider).when(
+                data: (weeks) => _NotificationsCard(weeks: weeks),
+                loading: () => const _StatsCardSkeleton(height: 200),
+                error: (e, _) => _StatsCardError(
+                  title: 'Уведомления',
+                  icon: Icons.notifications_active_rounded,
+                  error: e.toString(),
+                  onRetry: () => ref.invalidate(_notifStatsProvider),
                 ),
               ),
-              const SizedBox(width: 16),
-              Expanded(
-                child: ref.watch(_growthProvider).when(
-                  data: (pts) => _GrowthCard(points: pts),
-                  loading: () => const _StatsCardSkeleton(height: 200),
-                  error: (e, _) => _StatsCardError(
-                    title: 'Новые участники',
-                    icon: Icons.group_add_rounded,
-                    error: e.toString(),
-                    onRetry: () => ref.invalidate(_growthProvider),
-                  ),
+              ref.watch(_growthProvider).when(
+                data: (pts) => _GrowthCard(points: pts),
+                loading: () => const _StatsCardSkeleton(height: 200),
+                error: (e, _) => _StatsCardError(
+                  title: 'Новые участники',
+                  icon: Icons.group_add_rounded,
+                  error: e.toString(),
+                  onRetry: () => ref.invalidate(_growthProvider),
                 ),
               ),
             ],
@@ -586,13 +618,16 @@ class _CompositionCard extends StatelessWidget {
                 const Icon(Icons.verified_user_rounded,
                     size: 16, color: Color(0xFF059669)),
                 const SizedBox(width: 8),
-                Text(
-                  'Зарегистрировано: ${stats.users} из ${stats.people} '
-                  '(${total > 0 ? (stats.users / total * 100).round() : 0}%)',
-                  style: const TextStyle(
-                      fontSize: 12,
-                      color: Color(0xFF059669),
-                      fontWeight: FontWeight.w500),
+                Expanded(
+                  child: Text(
+                    'Зарегистрировано: ${stats.users} из ${stats.people} '
+                    '(${total > 0 ? (stats.users / total * 100).round() : 0}%)',
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                        fontSize: 12,
+                        color: Color(0xFF059669),
+                        fontWeight: FontWeight.w500),
+                  ),
                 ),
               ]),
             ),
@@ -1180,21 +1215,24 @@ class _GrowthCard extends StatelessWidget {
                   ),
                 ),
                 const SizedBox(height: 10),
-                Row(children: [
-                  _GrowthLegend(
-                    color: const Color(0xFF059669),
-                    label: 'Участники',
-                    from: startPeople,
-                    to: endPeople,
-                  ),
-                  const SizedBox(width: 16),
-                  _GrowthLegend(
-                    color: const Color(0xFF2563EB),
-                    label: 'Аккаунты',
-                    from: startReg,
-                    to: endReg,
-                  ),
-                ]),
+                Wrap(
+                  spacing: 16,
+                  runSpacing: 6,
+                  children: [
+                    _GrowthLegend(
+                      color: const Color(0xFF059669),
+                      label: 'Участники',
+                      from: startPeople,
+                      to: endPeople,
+                    ),
+                    _GrowthLegend(
+                      color: const Color(0xFF2563EB),
+                      label: 'Аккаунты',
+                      from: startReg,
+                      to: endReg,
+                    ),
+                  ],
+                ),
               ],
             ),
     );
@@ -1354,12 +1392,17 @@ class _StatsCard extends StatelessWidget {
             const SizedBox(width: 8),
             Expanded(
               child: Text(title,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
                   style: const TextStyle(
                       fontSize: 13,
                       fontWeight: FontWeight.w600,
                       color: Color(0xFF111827))),
             ),
+            const SizedBox(width: 6),
             Text(trailing,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
                 style: TextStyle(
                     fontSize: 11,
                     fontWeight: FontWeight.w600,
@@ -1367,6 +1410,8 @@ class _StatsCard extends StatelessWidget {
           ]),
           const SizedBox(height: 3),
           Text(subtitle,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
               style:
                   TextStyle(fontSize: 11, color: Colors.grey.shade400)),
           const SizedBox(height: 14),

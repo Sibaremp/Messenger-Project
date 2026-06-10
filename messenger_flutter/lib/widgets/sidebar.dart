@@ -199,8 +199,32 @@ class Sidebar extends StatelessWidget {
         children: [
           const SizedBox(height: 16),
 
+          // ── Логотип ───────────────────────────────────────────────
+          Tooltip(
+            message: 'Caspian Messenger',
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(7),
+              child: Image.asset(
+                'assets/images/logo.png',
+                width: 28, height: 28,
+                fit: BoxFit.contain,
+                errorBuilder: (_, _, _) => _logoFallback(primary),
+              ),
+            ),
+          ),
+
+          const SizedBox(height: 12),
+
           // ── Аватар ───────────────────────────────────────────────
           _buildUserCard(context, isDark, primary, collapsed: true),
+
+          // ── Уведомления ──────────────────────────────────────────
+          _CollapsedNavIcon(
+            icon: Icons.notifications_none,
+            selected: selected == SidebarNav.notifications,
+            tooltip: context.l10n.notificationsTab,
+            onTap: () => onSelect(SidebarNav.notifications),
+          ),
 
           // ── Разделитель ──────────────────────────────────────────
           _buildDivider(isDark),

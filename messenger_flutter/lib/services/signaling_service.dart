@@ -176,8 +176,7 @@ class SignalingService {
     } catch (e) { _log('ParticipantLeft parse error: $e  args=$args'); }
   }
 
-  // ignore: avoid_print
-  void _log(String msg) => print('[SignalingService] $msg');
+  void _log(String msg) {}
 
   // ── REST helpers ──────────────────────────────────────────────────────────
 

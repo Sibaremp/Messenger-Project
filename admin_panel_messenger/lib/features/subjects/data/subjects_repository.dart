@@ -105,4 +105,23 @@ class SubjectsRepository {
       throw mapDioException(e);
     }
   }
+
+  Future<void> updateAssignment(
+    int personId,
+    int assignmentId, {
+    int? newPersonId,
+    String? newGroupName,
+  }) async {
+    try {
+      await _apiClient.patch<dynamic>(
+        '/api/admin/people/$personId/subjects/$assignmentId',
+        data: {
+          if (newPersonId != null) 'newPersonId': newPersonId,
+          if (newGroupName != null) 'newGroupName': newGroupName,
+        },
+      );
+    } on DioException catch (e) {
+      throw mapDioException(e);
+    }
+  }
 }

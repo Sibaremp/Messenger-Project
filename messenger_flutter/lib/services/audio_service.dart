@@ -7,11 +7,12 @@ import 'package:record/record.dart';
 /// Управляет записью голосовых сообщений.
 ///
 /// Жизненный цикл:
-/// 1. [startRecording] — начинает запись в tmp-файл.
+/// 1. [startRecording] — начинает запись в tmp-файл (нативно) или blob (веб).
 /// 2. [stopRecording]  — останавливает запись и возвращает путь + длительность.
 /// 3. [cancelRecording] — останавливает и удаляет tmp-файл (свайп влево).
 ///
 /// Формат вывода:
+/// - Web              → WebM/Opus (.webm) — единственный гарантированный формат MediaRecorder API.
 /// - Android / Linux  → Opus (.ogg) — нативная поддержка, хорошее сжатие.
 /// - iOS / macOS / Windows → AAC (.m4a) — нативно, сервер принимает явно.
 class AudioService {
@@ -35,6 +36,7 @@ class AudioService {
       _ampController?.stream ?? const Stream.empty();
 
   // Кодек выбирается по платформе:
+  //   Web    → Opus-in-WebM — единственный надёжный вариант через MediaRecorder API браузера.
   //   Linux  → Opus (.ogg)  — AAC не гарантирован в дистрибутивах Linux.
   //   Все остальные → AAC  (.m4a) — поддерживается ExoPlayer (Android) И
   //   AVFoundation (iOS/macOS), что обеспечивает кросс-платформенное
@@ -46,29 +48,50 @@ class AudioService {
   Future<void> startRecording() async {
     if (_isRecording) return;
 
-    final hasPermission = await _recorder.hasPermission();
-    if (!hasPermission) throw Exception('Нет разрешения на микрофон');
+    if (kIsWeb) {
+      // На вебе hasPermission() возвращает false когда разрешение ещё в состоянии
+      // 'prompt' (не запрашивалось) — не показывая диалог браузера совсем.
+      // Поэтому на вебе пропускаем проверку: браузер сам покажет диалог при
+      // вызове start(). Если пользователь ранее заблокировал микрофон —
+      // start() выбросит исключение, которое поймает вызывающий код.
+      final ts = DateTime.now().millisecondsSinceEpoch;
+      _currentPath = 'voice_$ts.webm'; // путь на вебе игнорируется record-пакетом
+      _startTime = DateTime.now();
 
-    final dir = await getTemporaryDirectory();
-    final ts  = DateTime.now().millisecondsSinceEpoch;
-    final ext = _useOpus ? '.ogg' : '.m4a';
-    _currentPath = '${dir.path}/voice_$ts$ext';
-    _startTime   = DateTime.now();
+      await _recorder.start(
+        const RecordConfig(
+          encoder: AudioEncoder.opus,
+          sampleRate: 48000,
+          numChannels: 1,
+        ),
+        path: _currentPath!,
+      );
+    } else {
+      // Нативные платформы: явно проверяем разрешение перед записью.
+      final hasPermission = await _recorder.hasPermission();
+      if (!hasPermission) throw Exception('Нет разрешения на микрофон');
 
-    final config = _useOpus
-        ? const RecordConfig(
-            encoder:     AudioEncoder.opus,
-            sampleRate:  16000,
-            numChannels: 1,
-          )
-        : const RecordConfig(
-            encoder:     AudioEncoder.aacLc,
-            bitRate:     64000,
-            sampleRate:  44100,
-            numChannels: 1,
-          );
+      final dir = await getTemporaryDirectory();
+      final ts  = DateTime.now().millisecondsSinceEpoch;
+      final ext = _useOpus ? '.ogg' : '.m4a';
+      _currentPath = '${dir.path}/voice_$ts$ext';
+      _startTime   = DateTime.now();
 
-    await _recorder.start(config, path: _currentPath!);
+      final config = _useOpus
+          ? const RecordConfig(
+              encoder:     AudioEncoder.opus,
+              sampleRate:  16000,
+              numChannels: 1,
+            )
+          : const RecordConfig(
+              encoder:     AudioEncoder.aacLc,
+              bitRate:     64000,
+              sampleRate:  44100,
+              numChannels: 1,
+            );
+
+      await _recorder.start(config, path: _currentPath!);
+    }
 
     _isRecording = true;
 
@@ -99,6 +122,10 @@ class AudioService {
   /// Останавливает запись и возвращает путь к файлу и длительность.
   /// Длительность измеряется таймером от старта до стопа.
   /// Возвращает null если запись не велась.
+  ///
+  /// На вебе [AudioRecorder.stop] возвращает blob URL вида
+  /// `blob:https://...` — именно его мы передаём дальше как «путь»,
+  /// чтобы [_uploadAudio] мог прочитать данные через HTTP-запрос к blob.
   Future<({String path, int durationMs})?> stopRecording() async {
     if (!_isRecording) return null;
     _isRecording = false;
@@ -106,11 +133,13 @@ class AudioService {
     final durationMs =
         _startTime != null ? DateTime.now().difference(_startTime!).inMilliseconds : 0;
 
-    await _recorder.stop();
+    // На вебе stop() возвращает blob URL; на нативных — тот же путь, что был передан в start().
+    final stoppedPath = await _recorder.stop();
     await _ampController?.close();
     _ampController = null;
 
-    final path = _currentPath;
+    // Используем blob URL (веб) или _currentPath (нативно).
+    final path = (kIsWeb && stoppedPath != null) ? stoppedPath : _currentPath;
     _currentPath = null;
     _startTime   = null;
 
@@ -131,7 +160,8 @@ class AudioService {
     _currentPath = null;
     _startTime = null;
 
-    if (path != null) {
+    // На вебе нет файловой системы — blob управляется браузером, удалять нечего.
+    if (!kIsWeb && path != null) {
       try {
         await File(path).delete();
       } catch (_) {}

@@ -1,8 +1,10 @@
+import 'dart:io';
 import 'package:dio/dio.dart';
+import 'package:dio/io.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../storage/token_storage.dart';
 
-const String kBaseUrl = 'http://localhost:5216';
+const String kBaseUrl = 'https://api.caspianmessenger.kz';
 
 final apiClientProvider = Provider<ApiClient>((ref) {
   return ApiClient(tokenStorage: ref.watch(tokenStorageProvider));
@@ -19,6 +21,17 @@ class ApiClient {
       receiveTimeout: const Duration(seconds: 15),
       headers: {'Content-Type': 'application/json'},
     ));
+
+    // На десктопе (Windows/Linux/macOS) dart:io проверяет SSL-цепочку системным
+    // стором. Тоннельные сертификаты (Let's Encrypt через ngrok / Cloudflare)
+    // иногда не проходят проверку — разрешаем все доверенные и самоподписанные.
+    if (!const bool.fromEnvironment('dart.library.html')) {
+      (_dio.httpClientAdapter as IOHttpClientAdapter).createHttpClient = () {
+        final client = HttpClient();
+        client.badCertificateCallback = (cert, host, port) => true;
+        return client;
+      };
+    }
 
     _dio.interceptors.add(
       InterceptorsWrapper(
@@ -48,6 +61,10 @@ class ApiClient {
     return _dio.put<T>(path, data: data);
   }
 
+  Future<Response<T>> patch<T>(String path, {dynamic data}) {
+    return _dio.patch<T>(path, data: data);
+  }
+
   Future<Response<T>> delete<T>(String path) {
     return _dio.delete<T>(path);
   }
@@ -69,22 +86,37 @@ class ApiException implements Exception {
 
 ApiException mapDioException(DioException e) {
   final status = e.response?.statusCode;
-  if (status == 401) {
-    return const ApiException('Сессия истекла. Войдите снова.', statusCode: 401);
+
+  // Извлекаем message из тела ответа (если есть)
+  String? bodyMsg;
+  final data = e.response?.data;
+  if (data is Map) {
+    bodyMsg = data['message'] as String?;
+  } else if (data is String && data.isNotEmpty) {
+    bodyMsg = data;
   }
+
   if (status == 400) {
-    final msg = e.response?.data?['message'] as String?;
-    return ApiException(msg ?? 'Некорректный запрос', statusCode: 400);
+    return ApiException(bodyMsg ?? 'Некорректный запрос', statusCode: 400);
+  }
+  if (status == 401) {
+    // Для страницы логина сервер возвращает своё сообщение — показываем его
+    return ApiException(
+      bodyMsg ?? 'Неверный логин или пароль',
+      statusCode: 401,
+    );
+  }
+  if (status == 403) {
+    return ApiException(bodyMsg ?? 'Доступ запрещён', statusCode: 403);
   }
   if (status == 404) {
-    return const ApiException('Ресурс не найден', statusCode: 404);
+    return ApiException(bodyMsg ?? 'Ресурс не найден', statusCode: 404);
   }
   if (status == 409) {
-    final msg = e.response?.data?['message'] as String?;
-    return ApiException(msg ?? 'Такая запись уже существует', statusCode: 409);
+    return ApiException(bodyMsg ?? 'Такая запись уже существует', statusCode: 409);
   }
   if (status != null && status >= 500) {
-    return ApiException('Ошибка сервера ($status)', statusCode: status);
+    return ApiException(bodyMsg ?? 'Ошибка сервера ($status)', statusCode: status);
   }
   if (e.type == DioExceptionType.connectionTimeout ||
       e.type == DioExceptionType.receiveTimeout) {
@@ -93,8 +125,20 @@ ApiException mapDioException(DioException e) {
   if (e.type == DioExceptionType.connectionError) {
     return const ApiException('Нет соединения с сервером. Проверьте адрес и сеть.');
   }
-  final bodyMsg = e.response?.data is Map
-      ? (e.response!.data as Map)['message'] as String?
-      : null;
+  // Браузерные CORS/сетевые ошибки попадают сюда с type == unknown
+  if (e.type == DioExceptionType.unknown) {
+    final msg = e.message ?? '';
+    final inner = e.error?.toString() ?? '';
+    final detail = [if (msg.isNotEmpty) msg, if (inner.isNotEmpty && inner != msg) inner]
+        .join(' | ');
+    if (msg.toLowerCase().contains('xmlhttprequest') ||
+        msg.toLowerCase().contains('cors') ||
+        inner.toLowerCase().contains('cors')) {
+      return const ApiException('Ошибка сети. Возможно, CORS не настроен на сервере.');
+    }
+    return ApiException(
+      bodyMsg ?? (detail.isNotEmpty ? detail : 'Нет ответа от сервера.'),
+    );
+  }
   return ApiException(bodyMsg ?? e.message ?? 'Неизвестная ошибка');
 }
